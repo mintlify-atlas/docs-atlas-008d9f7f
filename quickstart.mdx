@@ -1,80 +1,387 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with Closeness Decoder in 5 minutes—from authentication to your first file share
 ---
 
-## Get started in three steps
+# Quickstart Guide
 
-Get your documentation site running locally and make your first customization.
+This guide will walk you through creating your first secure file share with Closeness Decoder. You'll learn how to authenticate, upload a file, generate a share link, and access the shared file.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+- A Google account for authentication
+- Node.js 18+ and npm (for frontend)
+- Java 17+ and Maven (for backend)
+- PostgreSQL, Redis, and Kafka running locally or via Docker
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  For local development, you'll need to set up environment variables for Google OAuth 2.0, S3 credentials, and database connections. See the [Environment Variables](/deployment/environment-variables) guide for details.
 </Note>
+
+## Step 1: Authenticate with Google
+
+Closeness Decoder uses Google OAuth 2.0 for secure authentication. Users can sign up or sign in with their Google account.
+
+<Steps>
+  <Step title="Frontend: Initialize Google OAuth">
+    The frontend uses the `@react-oauth/google` package to handle Google authentication.
+
+    <CodeGroup>
+    ```tsx frontend/src/pages/LoginPage.tsx
+    import { GoogleLogin } from '@react-oauth/google';
+    import type { CredentialResponse } from '@react-oauth/google';
+    import { useAuth } from '../context/AuthContext';
+
+    const LoginPage = () => {
+      const { signIn, signUp } = useAuth();
+      const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+
+      const handleGoogleSuccess = async (response: CredentialResponse) => {
+        if (response.credential) {
+          if (authMode === 'signup') {
+            await signUp(response.credential);
+          } else {
+            await signIn(response.credential);
+          }
+          navigate('/dashboard');
+        }
+      };
+
+      return (
+        <GoogleLogin
+          onSuccess={handleGoogleSuccess}
+          onError={() => console.error('Authentication failed')}
+          theme="filled_black"
+          size="large"
+        />
+      );
+    };
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Frontend: Send credential to backend">
+    The credential received from Google is sent to the backend for verification.
+
+    <CodeGroup>
+    ```typescript frontend/src/api/auth.ts
+    export const signInWithGoogle = async (credential: string): Promise<AuthResponse> => {
+      const response = await api.post<AuthResponse>('/api/auth/signin', { credential });
+      return response.data;
+    };
+
+    export const signUpWithGoogle = async (credential: string): Promise<AuthResponse> => {
+      const response = await api.post<AuthResponse>('/api/auth/signup', { credential });
+      return response.data;
+    };
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Backend: Verify credential and issue JWT">
+    The backend verifies the Google credential and issues a JWT token for subsequent requests.
+
+    <CodeGroup>
+    ```java backend/controller/AuthController.java
+    @RestController
+    @RequestMapping("/api/auth")
+    public class AuthController {
+
+      private final AuthService authService;
+
+      @PostMapping("/signup")
+      public ResponseEntity<AuthResponse> signUp(@RequestBody AuthRequest request) {
+        AuthResponse response = authService.signUp(request.getCredential());
+        return ResponseEntity.ok(response);
+      }
+
+      @PostMapping("/signin")
+      public ResponseEntity<AuthResponse> signIn(@RequestBody AuthRequest request) {
+        AuthResponse response = authService.signIn(request.getCredential());
+        return ResponseEntity.ok(response);
+      }
+    }
+    ```
+    </CodeGroup>
+
+    The `AuthResponse` includes a JWT token and user details:
+
+    ```json
+    {
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "user": {
+        "id": "123e4567-e89b-12d3-a456-426614174000",
+        "email": "user@example.com",
+        "name": "John Doe",
+        "avatar": "https://..."
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Frontend: Store token and add to requests">
+    Store the JWT token in localStorage and automatically include it in all API requests.
+
+    <CodeGroup>
+    ```typescript frontend/src/api/auth.ts
+    // Add auth token to all requests
+    api.interceptors.request.use((config) => {
+      const token = localStorage.getItem('accessToken');
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+      return config;
+    });
+    ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+<Note>
+  JWT tokens are valid for the duration specified in the backend configuration (`app.jwt.expiration-ms`). The frontend automatically handles token expiration by redirecting to the login page on 401 responses.
+</Note>
+
+## Step 2: Upload a File and Generate Share Link
+
+Once authenticated, users can upload PDF files and receive a shareable friend code URL.
+
+<Steps>
+  <Step title="Frontend: Upload file">
+    Use the file upload component to select and upload a PDF file.
+
+    <CodeGroup>
+    ```typescript frontend/src/api/files.ts
+    export const uploadFileAndGetShareUrl = async (file: File): Promise<UploadResult> => {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await api.post<FriendUrlResponse>(
+        '/api/friend-url/upload',
+        formData,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        }
+      );
+
+      const friendCode = response.data.friendCode;
+      const shareUrl = `${window.location.origin}/friend-url/${friendCode}`;
+
+      return { friendCode, shareUrl };
+    };
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Backend: Upload to S3 and generate presigned URL">
+    The backend uploads the file to Backblaze B2 (S3-compatible storage) and generates a 60-minute presigned URL.
+
+    <CodeGroup>
+    ```java backend/controller/S3Controller.java
+    @RestController
+    @RequestMapping("/api")
+    public class S3Controller {
+
+      private final S3Service s3Service;
+
+      @PostMapping(path = "/friend-url/upload")
+      public ResponseEntity<?> sendObjectToS3CompatibleStorageAndGeneratePresignedUrl(
+        @RequestParam("file") MultipartFile file
+      ) {
+        return s3Service.sendObjectAndGeneratePresignedUrl(file);
+      }
+    }
+    ```
+
+    ```java backend/service/impl/S3ServiceImpl.java
+    public ResponseEntity<?> sendObjectAndGeneratePresignedUrl(MultipartFile file) {
+      // Validate file type
+      if (!"application/pdf".equalsIgnoreCase(file.getContentType())) {
+        return new ResponseEntity<>("Only PDF file format is supported", HttpStatus.BAD_REQUEST);
+      }
+
+      // Generate unique S3 key
+      String key = LocalDate.now() + "/" + UUID.randomUUID() + ".pdf";
+
+      // Upload to S3
+      uploadObject(file, key);
+
+      // Generate presigned URL (60 minutes)
+      GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
+        .signatureDuration(Duration.ofMinutes(60))
+        .getObjectRequest(GetObjectRequest.builder()
+          .bucket(bucketName)
+          .key(key)
+          .build())
+        .build();
+
+      String presignedUrl = s3Presigner.presignGetObject(presignRequest).url().toString();
+
+      // Save to database with friend code
+      FriendUrl friendUrl = FriendUrl.builder()
+        .userId(currentUserId)
+        .sourceUrl(presignedUrl)
+        .sourceKey(key)
+        .expiryTimeMinutes(60)
+        .createdAt(LocalDateTime.now())
+        .expiresAt(LocalDateTime.now().plusMinutes(60))
+        .isActive(true)
+        .build();
+
+      friendUrl = friendUrlRepository.save(friendUrl);
+      UUID friendCode = friendUrl.getId();
+
+      // Cache in Redis for fast lookups
+      redisCacheService.createFriendUrl(friendCode.toString(), presignedUrl);
+
+      // Publish event to Kafka
+      kafkaProducer.publishUploadEvent(friendCode.toString(), key, createdAt, expiresAt);
+
+      return new ResponseEntity<>(new FriendLinkDto(friendCode), HttpStatus.OK);
+    }
+    ```
+    </CodeGroup>
+
+    <Warning>
+      Files must be PDF format and under 10MB. The upload endpoint validates these requirements before processing.
+    </Warning>
+  </Step>
+
+  <Step title="Response: Friend code">
+    The backend returns a friend code that can be shared:
+
+    ```json
+    {
+      "friendCode": "123e4567-e89b-12d3-a456-426614174000"
+    }
+    ```
+
+    The frontend constructs the shareable URL:
+    ```
+    https://yourdomain.com/friend-url/123e4567-e89b-12d3-a456-426614174000
+    ```
+  </Step>
+</Steps>
+
+## Step 3: Share and Access the File
+
+Recipients can access shared files by visiting the friend code URL.
+
+<Steps>
+  <Step title="Recipient visits the friend URL">
+    When a recipient visits the URL, the frontend fetches the presigned URL from the backend.
+
+    <CodeGroup>
+    ```typescript frontend/src/pages/ViewFilePage.tsx
+    const ViewFilePage = () => {
+      const { uniqueId } = useParams<{ uniqueId: string }>();
+      const [presignedUrl, setPresignedUrl] = useState<string | null>(null);
+
+      useEffect(() => {
+        const fetchFriendUrl = async () => {
+          const response = await fetch(`/api/friend-url/${uniqueId}`);
+          const data = await response.json();
+
+          if (data.friendUrl) {
+            setPresignedUrl(data.friendUrl);
+          }
+        };
+
+        fetchFriendUrl();
+      }, [uniqueId]);
+
+      return (
+        <a href={presignedUrl} target="_blank" rel="noopener noreferrer">
+          View / Download File
+        </a>
+      );
+    };
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Backend: Return presigned URL and track view">
+    The backend looks up the friend code, returns the presigned URL, and publishes a click event.
+
+    <CodeGroup>
+    ```java backend/controller/S3Controller.java
+    @GetMapping(path = "/friend-url/{friendCode}")
+    @RateLimiter(requests = 100, window = 60, key = "get-friend-url")
+    public ResponseEntity<FriendMessageDto> getFriendUrl(
+      @PathVariable("friendCode") UUID friendCode
+    ) {
+      return s3Service.getFriendUrl(friendCode);
+    }
+    ```
+
+    ```java backend/service/impl/S3ServiceImpl.java
+    public ResponseEntity<FriendMessageDto> getFriendUrl(UUID friendCode) {
+      // Try Redis cache first
+      String sourceUrl = redisCacheService.getFriendUrlFromCache(friendCode.toString());
+
+      if (sourceUrl != null) {
+        // Publish click event to Kafka
+        kafkaProducer.publishClickEvent(friendCode.toString(), System.currentTimeMillis());
+        return ResponseEntity.ok(new FriendMessageDto("Success", sourceUrl));
+      }
+
+      // Fallback to database
+      Optional<FriendUrl> friendUrl = friendUrlRepository.findById(friendCode);
+
+      if (friendUrl.isEmpty() || !friendUrl.get().getIsActive()) {
+        return ResponseEntity.accepted().body(new FriendMessageDto("Failed", null));
+      }
+
+      kafkaProducer.publishClickEvent(friendCode.toString(), System.currentTimeMillis());
+      return ResponseEntity.ok(new FriendMessageDto("Success", friendUrl.get().getSourceUrl()));
+    }
+    ```
+    </CodeGroup>
+
+    Response:
+    ```json
+    {
+      "status": "Success",
+      "friendUrl": "https://s3.backblazeb2.com/bucket-name/2026-03-03/uuid.pdf?X-Amz-Algorithm=..."
+    }
+    ```
+  </Step>
+
+  <Step title="User accesses file">
+    The recipient is redirected to the presigned URL to view or download the file. The presigned URL is valid for 60 minutes from creation.
+  </Step>
+</Steps>
+
+<Note>
+  The `/api/friend-url/{friendCode}` endpoint is rate-limited to 100 requests per 60 seconds to prevent abuse.
+</Note>
+
+## Step 4: Automatic Cleanup
+
+Closeness Decoder automatically cleans up expired files and URLs.
+
+- **Redis cache**: Entries expire after 60 minutes automatically
+- **Database**: A cleanup service periodically marks expired URLs as inactive
+- **S3 storage**: Files are deleted after expiration using a scheduled cleanup job
+
+<Warning>
+  Once a friend URL expires (60 minutes after creation), it cannot be accessed anymore. Users will see an "Link Expired" message if they try to access an expired URL.
+</Warning>
+
+## Next Steps
+
+Now that you've created your first file share, explore more features:
+
+<CardGroup cols={2}>
+  <Card title="Authentication Deep Dive" icon="shield-check" href="/features/authentication">
+    Learn about JWT tokens, token validation, and security best practices
+  </Card>
+  <Card title="File Sharing Details" icon="file-arrow-up" href="/features/file-sharing">
+    Understand presigned URLs, S3 storage, and cleanup mechanisms
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/auth/signup">
+    Complete API documentation for all endpoints
+  </Card>
+  <Card title="Deployment Setup" icon="laptop-code" href="/deployment/backend-setup">
+    Set up your deployment environment
+  </Card>
+</CardGroup>

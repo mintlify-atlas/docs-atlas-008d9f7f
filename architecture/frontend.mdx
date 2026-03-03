@@ -1,0 +1,764 @@
+---
+title: 'Frontend Architecture'
+description: 'React + TypeScript application structure, components, routing, and API integration'
+---
+
+## Overview
+
+The frontend is a modern React 19.2.0 application built with TypeScript and Vite, following component-based architecture with centralized state management for authentication.
+
+## Technology Stack
+
+<CardGroup cols={2}>
+  <Card title="React" icon="react">
+    **Version**: 19.2.0
+    
+    Component-based UI library with hooks for state management.
+  </Card>
+  <Card title="TypeScript" icon="code">
+    **Version**: 5.9.3
+    
+    Static type checking for enhanced developer experience.
+  </Card>
+  <Card title="Vite" icon="bolt">
+    **Version**: 7.2.4
+    
+    Fast build tool with HMR and optimized production builds.
+  </Card>
+  <Card title="React Router" icon="route">
+    **Version**: 7.12.0
+    
+    Client-side routing with protected routes.
+  </Card>
+</CardGroup>
+
+## Dependencies
+
+**Key Runtime Dependencies** (frontend/package.json):
+
+```json
+{
+  "react": "^19.2.0",
+  "react-dom": "^19.2.0",
+  "react-router-dom": "^7.12.0",
+  "@react-oauth/google": "^0.13.4",
+  "axios": "^1.13.2"
+}
+```
+
+**Development Dependencies**:
+- `@vitejs/plugin-react`: ^5.1.1 - React plugin for Vite
+- `typescript`: ~5.9.3 - TypeScript compiler
+- `typescript-eslint`: ^8.46.4 - ESLint for TypeScript
+- `eslint-plugin-react-hooks`: ^7.0.1 - React hooks linting rules
+
+## Project Structure
+
+```
+frontend/src/
+├── App.tsx                      # Root component with routing
+├── main.tsx                     # Application entry point
+├── api/
+│   ├── auth.ts                  # Authentication API client
+│   └── files.ts                 # File upload/download API client
+├── components/
+│   ├── FileUpload.tsx           # Drag-and-drop file upload
+│   ├── LinkCard.tsx             # Shareable link display
+│   └── ProtectedRoute.tsx       # Route guard component
+├── context/
+│   └── AuthContext.tsx          # Global auth state provider
+├── pages/
+│   ├── Dashboard.tsx            # Authenticated user dashboard
+│   ├── LoginPage.tsx            # Google OAuth login
+│   └── ViewFilePage.tsx         # Public file viewing page
+└── assets/
+    └── (static assets)
+```
+
+<Info>
+11 TypeScript/TSX files organized in 5 directories
+</Info>
+
+## Application Entry Point
+
+### main.tsx
+
+**Location**: `frontend/src/main.tsx`
+
+```tsx
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import App from './App.tsx'
+import './index.css'
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+```
+
+### App.tsx
+
+**Location**: `frontend/src/App.tsx`
+
+Root component that sets up providers and routing.
+
+```tsx
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { GoogleOAuthProvider } from '@react-oauth/google';
+import { AuthProvider } from './context/AuthContext';
+import LoginPage from './pages/LoginPage';
+import Dashboard from './pages/Dashboard';
+import ViewFilePage from './pages/ViewFilePage';
+import ProtectedRoute from './components/ProtectedRoute';
+
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID';
+
+function App() {
+  return (
+    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+      <AuthProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<LoginPage />} />
+            <Route path="/friend-url/:uniqueId" element={<ViewFilePage />} />
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute>
+                  <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
+    </GoogleOAuthProvider>
+  );
+}
+
+export default App;
+```
+
+**Provider Hierarchy** (App.tsx:12-14):
+1. `GoogleOAuthProvider` - Provides Google OAuth context
+2. `AuthProvider` - Manages authentication state
+3. `BrowserRouter` - Enables client-side routing
+
+## Routing Structure
+
+### Route Definitions
+
+| Path | Component | Protected | Description |
+|------|-----------|-----------|-------------|
+| `/` | `LoginPage` | No | Google OAuth login |
+| `/dashboard` | `Dashboard` | Yes | File upload and link management |
+| `/friend-url/:uniqueId` | `ViewFilePage` | No | Public file viewing |
+
+### ProtectedRoute Component
+
+**Location**: `frontend/src/components/ProtectedRoute.tsx`
+
+```tsx
+import { Navigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+
+interface ProtectedRouteProps {
+  children: React.ReactNode;
+}
+
+const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div>Loading...</div>;
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <>{children}</>;
+};
+
+export default ProtectedRoute;
+```
+
+**Flow**:
+1. Check `isLoading` state - show loading UI if auth validation in progress
+2. Check `isAuthenticated` - redirect to login if false
+3. Render children if authenticated
+
+## State Management
+
+### AuthContext
+
+**Location**: `frontend/src/context/AuthContext.tsx`
+
+Provides global authentication state using React Context API.
+
+```tsx
+interface AuthContextType {
+    user: UserDto | null;
+    isLoading: boolean;
+    isAuthenticated: boolean;
+    signIn: (credential: string) => Promise<void>;
+    signUp: (credential: string) => Promise<void>;
+    logout: () => void;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+```
+
+**State Variables**:
+- `user` - Current user object (null if not authenticated)
+- `isLoading` - True during token validation
+- `isAuthenticated` - Computed from `!!user`
+
+**Key Features**:
+
+#### Token Validation on App Load
+
+```tsx
+const validateAndLoadUser = useCallback(async () => {
+    const token = localStorage.getItem('accessToken');
+
+    if (!token) {
+        setIsLoading(false);
+        return;
+    }
+
+    try {
+        // Validate token by calling /me endpoint
+        const currentUser = await getCurrentUser();
+        setUser(currentUser);
+        // Update stored user data with fresh data from server
+        localStorage.setItem('user', JSON.stringify(currentUser));
+    } catch {
+        // Token is invalid or expired - clear auth state
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('user');
+        setUser(null);
+    } finally {
+        setIsLoading(false);
+    }
+}, []);
+
+useEffect(() => {
+    validateAndLoadUser();
+}, [validateAndLoadUser]);
+```
+
+**Flow** (AuthContext.tsx:22-44):
+1. Check `localStorage` for existing `accessToken`
+2. If token exists, validate by calling `GET /api/auth/me`
+3. If valid, update user state and refresh `localStorage`
+4. If invalid (401), clear auth state
+5. Set `isLoading` to false
+
+#### Sign In
+
+```tsx
+const signIn = async (credential: string) => {
+    try {
+        setIsLoading(true);
+        const response = await signInWithGoogle(credential);
+
+        localStorage.setItem('accessToken', response.accessToken);
+        localStorage.setItem('user', JSON.stringify(response.user));
+        setUser(response.user);
+    } catch (error) {
+        throw error;
+    } finally {
+        setIsLoading(false);
+    }
+};
+```
+
+**Flow** (AuthContext.tsx:50-62):
+1. Call `POST /api/auth/signin` with Google credential
+2. Store `accessToken` and `user` in `localStorage`
+3. Update `user` state
+4. Frontend automatically redirects to dashboard (see LoginPage.tsx)
+
+#### Sign Up
+
+Similar flow to sign-in, but calls `POST /api/auth/signup` (AuthContext.tsx:65-77).
+
+#### Logout
+
+```tsx
+const logout = useCallback(async () => {
+    try {
+        await apiLogout();  // Calls POST /api/auth/logout
+    } finally {
+        setUser(null);
+    }
+}, []);
+```
+
+**Note**: The `apiLogout` function also clears `localStorage` (auth.ts:74).
+
+### Custom Hook: useAuth
+
+```tsx
+export const useAuth = () => {
+    const context = useContext(AuthContext);
+    if (context === undefined) {
+        throw new Error('useAuth must be used within an AuthProvider');
+    }
+    return context;
+};
+```
+
+**Usage in Components**:
+```tsx
+import { useAuth } from '../context/AuthContext';
+
+const Dashboard = () => {
+    const { user, logout } = useAuth();
+    // ...
+};
+```
+
+## API Client
+
+### auth.ts
+
+**Location**: `frontend/src/api/auth.ts`
+
+Centralized Axios instance with interceptors.
+
+```tsx
+import axios from 'axios';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+
+const api = axios.create({
+  baseURL: API_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+```
+
+#### Request Interceptor
+
+Automatically adds JWT token to all requests (auth.ts:13-19):
+
+```tsx
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('accessToken');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+```
+
+**Flow**:
+1. Retrieve `accessToken` from `localStorage`
+2. If exists, add to `Authorization` header as `Bearer <token>`
+3. Backend `JwtAuthenticationFilter` validates this token
+
+#### Response Interceptor
+
+Handles token expiry automatically (auth.ts:22-37):
+
+```tsx
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Token is invalid or expired - clear auth state
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('user');
+
+      // Redirect to login if not already there
+      if (window.location.pathname !== '/') {
+        window.location.href = '/';
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+```
+
+**Flow**:
+1. On any API response with status 401 (Unauthorized)
+2. Clear `accessToken` and `user` from `localStorage`
+3. Redirect to login page if not already there
+4. This provides seamless auto-logout on token expiry
+
+#### API Functions
+
+```tsx
+export interface UserDto {
+  id: string;
+  email: string;
+  name: string;
+  avatar: string;
+}
+
+export interface AuthResponse {
+  accessToken: string;
+  user: UserDto;
+}
+
+// POST /api/auth/signup
+export const signUpWithGoogle = async (credential: string): Promise<AuthResponse> => {
+  const response = await api.post<AuthResponse>('/api/auth/signup', { credential });
+  return response.data;
+};
+
+// POST /api/auth/signin
+export const signInWithGoogle = async (credential: string): Promise<AuthResponse> => {
+  const response = await api.post<AuthResponse>('/api/auth/signin', { credential });
+  return response.data;
+};
+
+// GET /api/auth/me
+export const getCurrentUser = async (): Promise<UserDto> => {
+  const response = await api.get<UserDto>('/api/auth/me');
+  return response.data;
+};
+
+// POST /api/auth/logout
+export const logout = async (): Promise<void> => {
+  try {
+    await api.post('/api/auth/logout');
+  } finally {
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('user');
+  }
+};
+```
+
+### files.ts
+
+**Location**: `frontend/src/api/files.ts`
+
+File upload and friend URL retrieval.
+
+```tsx
+import api from './auth';  // Reuses axios instance with interceptors
+
+interface FriendUrlResponse {
+    friendCode: string;
+}
+
+export interface UploadResult {
+    friendCode: string;
+    shareUrl: string;
+}
+
+// POST /api/friend-url/upload
+export const uploadFileAndGetShareUrl = async (file: File): Promise<UploadResult> => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await api.post<FriendUrlResponse>('/api/friend-url/upload', formData, {
+        headers: {
+            'Content-Type': 'multipart/form-data',
+        },
+    });
+
+    const friendCode = response.data.friendCode;
+    const shareUrl = `${window.location.origin}/friend-url/${friendCode}`;
+
+    return { friendCode, shareUrl };
+};
+
+// GET /api/friend-url/{friendCode}
+export const getPresignedUrl = async (friendCode: string): Promise<string> => {
+    const response = await api.get<{ friendUrl: string }>(`/api/friend-url/${encodeURIComponent(friendCode)}`);
+    return response.data.friendUrl;
+};
+```
+
+**Key Features**:
+- Constructs full share URL on frontend (files.ts:23)
+- Encodes friend code for URL safety (files.ts:29)
+- Automatically includes `Authorization` header via interceptor
+
+## Pages
+
+### LoginPage
+
+**Location**: `frontend/src/pages/LoginPage.tsx`
+
+Google OAuth login with redirect logic.
+
+**Key Features**:
+- Uses `@react-oauth/google` library's `GoogleLogin` component
+- Handles both sign-in and sign-up flows
+- Redirects to `/dashboard` after successful authentication
+- Displays error messages for failed authentication
+
+**Google OAuth Flow**:
+1. User clicks "Sign in with Google" button
+2. Google OAuth popup opens
+3. User authorizes the application
+4. Google returns credential (JWT token)
+5. Frontend sends credential to backend `/api/auth/signin` or `/api/auth/signup`
+6. Backend validates with Google and returns app JWT
+7. Frontend stores JWT and redirects to dashboard
+
+### Dashboard
+
+**Location**: `frontend/src/pages/Dashboard.tsx`
+
+Authenticated user dashboard for file uploads.
+
+**Components Used**:
+- `FileUpload` - Drag-and-drop file upload component
+- `LinkCard` - Displays generated shareable link
+
+**State Management**:
+```tsx
+const [uploadedLink, setUploadedLink] = useState<string | null>(null);
+const [isUploading, setIsUploading] = useState(false);
+const [error, setError] = useState<string | null>(null);
+```
+
+**Upload Flow**:
+1. User drags/selects PDF file
+2. `FileUpload` component validates file type and size
+3. Calls `uploadFileAndGetShareUrl(file)`
+4. Displays loading state during upload
+5. On success, displays `LinkCard` with shareable link
+6. On error, displays error message
+
+**User Profile**:
+- Displays user avatar and name from `useAuth().user`
+- Logout button clears auth state and redirects to login
+
+### ViewFilePage
+
+**Location**: `frontend/src/pages/ViewFilePage.tsx`
+
+Public page for viewing shared files (no authentication required).
+
+**URL Pattern**: `/friend-url/:uniqueId`
+
+**Flow**:
+1. Extract `uniqueId` from URL params (React Router)
+2. Call `GET /api/friend-url/{uniqueId}` to get presigned URL
+3. Display loading state while fetching
+4. On success, render PDF viewer or download button
+5. On error (expired/invalid link), display error message
+
+**Key Features**:
+- No authentication required (public route)
+- Handles expired links gracefully
+- Direct download from Backblaze B2 via presigned URL
+- Rate limited to prevent abuse (backend: 100 requests/60s)
+
+## Components
+
+### FileUpload
+
+**Location**: `frontend/src/components/FileUpload.tsx`
+
+Drag-and-drop file upload component with validation.
+
+**Props**:
+```tsx
+interface FileUploadProps {
+  onUpload: (file: File) => void;
+  isUploading: boolean;
+}
+```
+
+**Features**:
+- Drag-and-drop zone with visual feedback
+- File input fallback (click to browse)
+- Client-side validation:
+  - File type: PDF only
+  - File size: Max 10MB
+- Displays selected file name and size
+- Shows upload progress indicator
+
+### LinkCard
+
+**Location**: `frontend/src/components/LinkCard.tsx`
+
+Displays shareable link with copy-to-clipboard functionality.
+
+**Props**:
+```tsx
+interface LinkCardProps {
+  shareUrl: string;
+  expiryMinutes?: number;  // Default: 60
+}
+```
+
+**Features**:
+- Copy to clipboard button
+- Expiry countdown timer
+- Visual feedback on copy success
+- Responsive design for mobile
+
+## Type Safety
+
+### TypeScript Interfaces
+
+All API responses and component props are strongly typed.
+
+**Example** (auth.ts:39-48):
+```tsx
+export interface UserDto {
+  id: string;
+  email: string;
+  name: string;
+  avatar: string;
+}
+
+export interface AuthResponse {
+  accessToken: string;
+  user: UserDto;
+}
+```
+
+**Benefits**:
+- Compile-time error checking
+- IntelliSense autocomplete in IDEs
+- Refactoring safety
+- Self-documenting code
+
+## Environment Variables
+
+**Configuration** (.env):
+
+```bash
+VITE_API_URL=https://api.closeness-decoder.com
+VITE_GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+```
+
+**Usage** (App.tsx:9):
+```tsx
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID';
+```
+
+<Note>
+Vite requires `VITE_` prefix for environment variables to be exposed to the client.
+</Note>
+
+## Build & Deployment
+
+### Development
+
+```bash
+npm run dev
+```
+
+- Starts Vite dev server on `http://localhost:5173`
+- Hot Module Replacement (HMR) enabled
+- TypeScript type checking in watch mode
+
+### Production Build
+
+```bash
+npm run build
+```
+
+**Process** (package.json:8):
+1. `tsc -b` - TypeScript compilation with build mode
+2. `vite build` - Optimized production build
+
+**Output**: `dist/` directory with:
+- Minified JavaScript bundles
+- Code splitting for optimal loading
+- Hashed filenames for cache busting
+- Optimized CSS
+
+### Deployment (Vercel)
+
+**Configuration** (vercel.json or auto-detected):
+- Build command: `npm run build`
+- Output directory: `dist`
+- Install command: `npm install`
+- Node version: 18.x or higher
+
+**Environment Variables** (set in Vercel dashboard):
+- `VITE_API_URL` - Backend API URL
+- `VITE_GOOGLE_CLIENT_ID` - Google OAuth client ID
+
+**Automatic Deploys**:
+- Main branch pushes trigger production deploys
+- Pull requests get preview deployments
+- Instant rollbacks available
+
+## Performance Optimizations
+
+- **Code Splitting**: React Router lazy loading for routes
+- **Asset Optimization**: Vite automatically optimizes images and fonts
+- **Tree Shaking**: Unused code eliminated in production builds
+- **Minification**: JavaScript and CSS minified
+- **CDN Delivery**: Vercel Edge Network for global distribution
+
+## Error Handling
+
+### API Error Handling
+
+All API calls wrapped in try-catch with user-friendly messages.
+
+**Example** (Dashboard.tsx):
+```tsx
+const handleFileUpload = async (file: File) => {
+  setIsUploading(true);
+  setError(null);
+  
+  try {
+    const result = await uploadFileAndGetShareUrl(file);
+    setUploadedLink(result.shareUrl);
+  } catch (err) {
+    setError('Failed to upload file. Please try again.');
+    console.error('Upload error:', err);
+  } finally {
+    setIsUploading(false);
+  }
+};
+```
+
+### Global Error Boundary
+
+React error boundaries can be added to catch render errors:
+
+```tsx
+class ErrorBoundary extends React.Component {
+  componentDidCatch(error, errorInfo) {
+    // Log to error reporting service
+  }
+  
+  render() {
+    if (this.state.hasError) {
+      return <h1>Something went wrong.</h1>;
+    }
+    return this.props.children;
+  }
+}
+```
+
+## Testing
+
+### Linting
+
+```bash
+npm run lint
+```
+
+**ESLint Configuration**:
+- `@eslint/js` - JavaScript rules
+- `typescript-eslint` - TypeScript-specific rules
+- `eslint-plugin-react-hooks` - React hooks rules
+- `eslint-plugin-react-refresh` - React Refresh compatibility
+
+### Type Checking
+
+```bash
+npx tsc --noEmit
+```
+
+Runs TypeScript compiler in type-checking mode without emitting files.

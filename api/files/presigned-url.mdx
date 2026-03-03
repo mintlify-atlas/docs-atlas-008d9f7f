@@ -1,0 +1,91 @@
+---
+title: "Generate Presigned URL"
+description: "Generate a presigned URL for direct access to a file in S3 storage"
+---
+
+## GET /api/presigned-url/{key}
+
+Generates a presigned URL for direct access to a file stored in S3-compatible storage. The presigned URL allows temporary access to the file without requiring authentication.
+
+### Authentication
+
+Requires JWT authentication. Include the JWT token in the `Authorization` header:
+
+```
+Authorization: Bearer <token>
+```
+
+### Path Parameters
+
+<ParamField path="key" type="string" required>
+  The S3 object key of the file. This is typically in the format `YYYY-MM-DD/<uuid>.pdf` (e.g., `2026-03-03/550e8400-e29b-41d4-a716-446655440000.pdf`).
+</ParamField>
+
+### Response
+
+Returns a presigned URL string that can be used to directly access the file.
+
+<ResponseField name="presignedUrl" type="string">
+  A time-limited URL that provides direct access to the file in S3 storage. The URL expires after 45 minutes.
+</ResponseField>
+
+### Example Request
+
+```bash cURL
+curl -X GET https://api.closeness-decoder.com/api/presigned-url/2026-03-03/550e8400-e29b-41d4-a716-446655440000.pdf \
+  -H "Authorization: Bearer <your_jwt_token>"
+```
+
+### Response Examples
+
+<Expandable title="200 OK - Success">
+  ```json
+  "https://s3.us-west-000.backblazeb2.com/bucket-name/2026-03-03/550e8400-e29b-41d4-a716-446655440000.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Date=20260303T120000Z&X-Amz-Expires=2700&X-Amz-SignedHeaders=host&X-Amz-Signature=..."
+  ```
+  
+  The returned URL can be used directly in a browser or HTTP client to download the file. It expires 45 minutes after generation.
+</Expandable>
+
+<Expandable title="401 Unauthorized">
+  Returned when JWT token is missing or invalid.
+</Expandable>
+
+<Expandable title="500 Internal Server Error">
+  Returned when there's an error generating the presigned URL (e.g., file doesn't exist, S3 connection issues).
+</Expandable>
+
+### Implementation Details
+
+- Uses AWS SDK S3 Presigner to generate time-limited URLs
+- Presigned URLs expire after 45 minutes (2700 seconds)
+- The URL provides temporary access without exposing S3 credentials
+- The file must exist in the S3 bucket for the presigned URL to work
+- No validation is performed on the key format - invalid keys will result in S3 errors when the URL is accessed
+
+### Use Cases
+
+- **Direct file downloads**: Generate a URL that can be shared temporarily
+- **Client-side access**: Allow frontend applications to download files directly from S3
+- **Temporary file sharing**: Create time-limited access to uploaded documents
+
+<Warning>
+  The presigned URL expires after 45 minutes. After expiration, a new presigned URL must be generated.
+</Warning>
+
+### Comparison with Friend URLs
+
+This endpoint differs from `POST /api/friend-url/upload` in several ways:
+
+| Feature | `GET /api/presigned-url/{key}` | `POST /api/friend-url/upload` |
+|---------|-------------------------------|-------------------------------|
+| Authentication | Required | Required for upload |
+| Access method | Direct S3 key | Friend code |
+| Public access | No | Yes (via friend code) |
+| Database storage | No | Yes |
+| Expiration | 45 minutes | 60 minutes |
+| Analytics tracking | No | Yes (via Kafka) |
+
+### Source Code
+
+- Controller: `controller/S3Controller.java:24`
+- Service implementation: `service/impl/S3ServiceImpl.java:68`

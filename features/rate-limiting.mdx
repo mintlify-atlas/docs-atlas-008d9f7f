@@ -1,0 +1,471 @@
+---
+title: "Rate Limiting"
+description: "Redis-backed rate limiting implementation to protect APIs from abuse and ensure fair resource usage"
+---
+
+Closeness Decoder implements rate limiting using Redis-backed counters and Spring AOP (Aspect-Oriented Programming) to protect public endpoints from abuse and ensure fair resource usage across all users.
+
+## Overview
+
+The rate limiting system consists of:
+
+1. **@RateLimiter Annotation** - Declarative rate limit configuration on endpoints
+2. **RateLimitAspect** - AOP aspect that intercepts annotated methods
+3. **RedisCacheService** - Redis-backed counter implementation
+4. **RateLimiterService** - Business logic for rate limit enforcement
+
+<Note>
+  Rate limiting is especially important for public endpoints like friend URL retrieval, which don't require authentication.
+</Note>
+
+## How It Works
+
+<Steps>
+  <Step title="Request received">
+    User makes a request to a rate-limited endpoint
+  </Step>
+  <Step title="Aspect intercepts">
+    RateLimitAspect intercepts the method call via AOP
+  </Step>
+  <Step title="Key generation">
+    System generates a unique key combining endpoint and client IP
+  </Step>
+  <Step title="Counter check">
+    Redis counter is incremented and checked against limit
+  </Step>
+  <Step title="Allow or reject">
+    Request proceeds if under limit, or throws exception if exceeded
+  </Step>
+</Steps>
+
+## Rate Limiter Annotation
+
+The `@RateLimiter` annotation provides a clean, declarative way to add rate limiting:
+
+```java RateLimiter.java
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface RateLimiter {
+    int requests() default 100;
+    int window() default 60;
+    String key();
+}
+```
+
+<Accordion title="Annotation Parameters">
+  - **requests**: Maximum number of requests allowed within the time window (default: 100)
+  - **window**: Time window in seconds (default: 60)
+  - **key**: Custom key identifier for this rate limit rule
+</Accordion>
+
+## Usage Example
+
+Applying rate limiting to an endpoint:
+
+```java S3Controller.java
+@GetMapping(path = "/friend-url/{friendCode}")
+@RateLimiter(requests = 100, window = 60, key = "get-friend-url")
+public ResponseEntity<FriendMessageDto> getFriendUrl(
+        @PathVariable("friendCode") UUID friendCode
+) {
+    return s3Service.getFriendUrl(friendCode);
+}
+```
+
+This configuration allows:
+- **100 requests per 60 seconds** per IP address
+- Custom key "get-friend-url" for identifying this rate limit rule
+
+<Info>
+  The `key` parameter helps distinguish between different rate limit rules, especially when multiple endpoints share similar patterns.
+</Info>
+
+## AOP Aspect Implementation
+
+The `RateLimitAspect` intercepts methods annotated with `@RateLimiter`:
+
+```java RateLimitAspect.java
+@Aspect
+@Component
+@RequiredArgsConstructor
+public class RateLimitAspect {
+    
+    private final RateLimiterService rateLimiterService;
+
+    @Around("@annotation(rateLimit)")
+    public Object checkRateLimit(ProceedingJoinPoint joinPoint, RateLimiter rateLimit) throws Throwable {
+        
+        String clientKey = getClientKey(rateLimit.key());
+        
+        if (!rateLimiterService.isAllowed(clientKey, rateLimit.requests(), rateLimit.window())) {
+            long retryAfter = rateLimiterService.getTimeToReset(clientKey);
+            throw new RateLimitExceededException(retryAfter);
+        }
+        
+        return joinPoint.proceed();
+    }
+    
+    private String getClientKey(String customKey) {
+        HttpServletRequest request = ((ServletRequestAttributes) 
+            RequestContextHolder.currentRequestAttributes()).getRequest();
+        
+        String ip = request.getRemoteAddr();
+        String path = request.getRequestURI();
+        
+        if (customKey != null && !customKey.isEmpty()) {
+            return customKey + ":" + ip;
+        }
+        
+        return path + ":" + ip;
+    }
+}
+```
+
+<Accordion title="Implementation Details">
+  1. **@Around advice**: Intercepts the method call before execution
+  2. **Client key generation**: Combines custom key with client IP address
+  3. **Rate limit check**: Queries RateLimiterService to check if request is allowed
+  4. **Exception handling**: Throws RateLimitExceededException with retry-after time
+  5. **Proceed**: If allowed, calls the actual method via `joinPoint.proceed()`
+</Accordion>
+
+## Client Key Generation
+
+The system generates unique keys for each client:
+
+```java
+private String getClientKey(String customKey) {
+    HttpServletRequest request = ((ServletRequestAttributes) 
+        RequestContextHolder.currentRequestAttributes()).getRequest();
+    
+    String ip = request.getRemoteAddr();
+    String path = request.getRequestURI();
+    
+    if (customKey != null && !customKey.isEmpty()) {
+        return customKey + ":" + ip;
+    }
+    
+    return path + ":" + ip;
+}
+```
+
+Example keys:
+- With custom key: `get-friend-url:192.168.1.100`
+- Without custom key: `/api/friend-url/abc123:192.168.1.100`
+
+<Warning>
+  The system uses `request.getRemoteAddr()` to get the client IP. If your application is behind a proxy or load balancer, you may need to read the `X-Forwarded-For` header instead.
+</Warning>
+
+## Rate Limiter Service
+
+The service layer handles business logic for rate limiting:
+
+```java RateLimiterService.java
+@Service
+@RequiredArgsConstructor
+public class RateLimiterService {
+
+    private final RedisCacheService redisCacheService;
+
+    public boolean isAllowed(String key, int maxRequests, int windowSeconds) {
+        Long count = redisCacheService.createOrUpdateRateLimitKey(key, windowSeconds);
+        return count != null && count <= maxRequests;
+    }
+
+    public long getTimeToReset(String key) {
+        Long ttl = redisCacheService.getTimeToReset(key);
+        return ttl != null ? ttl : 0;
+    }
+}
+```
+
+## Redis Implementation
+
+Redis provides fast, distributed counter storage:
+
+```java RedisCacheService.java
+public Long createOrUpdateRateLimitKey(String key, int windowSeconds) {
+    String redisKey = "ratelimit:" + key;
+
+    Long count = redisTemplate.opsForValue().increment(redisKey);
+
+    if (count != null && count == 1) {
+        redisTemplate.expire(redisKey, Duration.ofSeconds(windowSeconds));
+    }
+    return count;
+}
+
+public Long getTimeToReset(String key) {
+    Long ttl = redisTemplate.getExpire("ratelimit:" + key);
+    return ttl != null ? ttl : 0;
+}
+```
+
+<Accordion title="Redis Operations Explained">
+  1. **Key prefix**: All rate limit keys are prefixed with "ratelimit:" for organization
+  2. **Atomic increment**: `increment()` atomically increments the counter and returns the new value
+  3. **First request detection**: When count equals 1, it's the first request in the window
+  4. **Automatic expiration**: TTL is set to the window duration for automatic cleanup
+  5. **TTL retrieval**: `getExpire()` returns seconds until the key expires
+</Accordion>
+
+### Redis Key Structure
+
+Example Redis keys:
+```
+ratelimit:get-friend-url:192.168.1.100
+ratelimit:get-friend-url:192.168.1.101
+ratelimit:api/upload:10.0.0.50
+```
+
+Each key stores:
+- **Value**: Integer counter (number of requests in current window)
+- **TTL**: Seconds remaining in current window
+
+## Error Response
+
+When rate limit is exceeded, a `RateLimitExceededException` is thrown:
+
+```java
+throw new RateLimitExceededException(retryAfter);
+```
+
+This exception should be handled by a global exception handler to return appropriate HTTP response:
+
+```java
+@ExceptionHandler(RateLimitExceededException.class)
+public ResponseEntity<ErrorResponse> handleRateLimitExceeded(RateLimitExceededException ex) {
+    return ResponseEntity
+            .status(HttpStatus.TOO_MANY_REQUESTS)
+            .header("Retry-After", String.valueOf(ex.getRetryAfter()))
+            .body(new ErrorResponse(
+                "Rate limit exceeded. Please try again in " + ex.getRetryAfter() + " seconds."
+            ));
+}
+```
+
+**Example Response:**
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 45
+Content-Type: application/json
+
+{
+  "message": "Rate limit exceeded. Please try again in 45 seconds."
+}
+```
+
+<Info>
+  The `Retry-After` header tells clients exactly when they can retry, enabling exponential backoff strategies.
+</Info>
+
+## Configuration
+
+Redis configuration for rate limiting:
+
+```yaml application.yaml
+spring:
+  data:
+    redis:
+      timeout: 2000ms
+      url: rediss://default:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}
+  cache:
+    type: redis
+    redis:
+      time-to-live: 3600000
+```
+
+Required environment variables:
+- **REDIS_HOST**: Redis server hostname
+- **REDIS_PORT**: Redis server port (default: 6379)
+- **REDIS_PASSWORD**: Redis authentication password
+
+<Note>
+  The configuration uses `rediss://` (Redis with SSL/TLS) for secure connections. Use `redis://` for local development without SSL.
+</Note>
+
+## Rate Limiting Strategies
+
+### Fixed Window
+
+Currently implemented - simple counter that resets after window expires:
+
+```
+Time:     0s    30s    60s    90s    120s
+Requests: [----100----][----100----]
+          ^            ^
+          Window 1     Window 2
+```
+
+**Pros:**
+- Simple implementation
+- Low memory usage
+- Fast performance
+
+**Cons:**
+- Burst traffic at window boundaries
+- Can allow 2x limit (100 requests at end of window 1 + 100 at start of window 2)
+
+### Sliding Window (Alternative)
+
+For more precise rate limiting, consider sliding window:
+
+```java
+public boolean isAllowedSlidingWindow(String key, int maxRequests, int windowSeconds) {
+    long now = System.currentTimeMillis();
+    long windowStart = now - (windowSeconds * 1000);
+    
+    String redisKey = "ratelimit-sliding:" + key;
+    
+    // Remove old entries
+    redisTemplate.opsForZSet().removeRangeByScore(redisKey, 0, windowStart);
+    
+    // Add current request
+    redisTemplate.opsForZSet().add(redisKey, String.valueOf(now), now);
+    
+    // Count requests in window
+    Long count = redisTemplate.opsForZSet().count(redisKey, windowStart, now);
+    
+    // Set expiration
+    redisTemplate.expire(redisKey, Duration.ofSeconds(windowSeconds));
+    
+    return count <= maxRequests;
+}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Appropriate Limits" icon="gauge-high">
+    Set limits based on expected usage patterns and server capacity
+  </Card>
+  <Card title="Different Limits" icon="layer-group">
+    Use different limits for authenticated vs public endpoints
+  </Card>
+  <Card title="Clear Errors" icon="message">
+    Return helpful error messages with Retry-After headers
+  </Card>
+  <Card title="Monitor Usage" icon="chart-line">
+    Track rate limit hits to identify abuse or adjust limits
+  </Card>
+</CardGroup>
+
+### Recommended Limits by Endpoint Type
+
+| Endpoint Type | Requests | Window | Reasoning |
+|---------------|----------|--------|----------|
+| **Public read** | 100 | 60s | Current implementation for friend URLs |
+| **Authenticated read** | 1000 | 60s | Higher limit for logged-in users |
+| **File upload** | 10 | 60s | Resource-intensive operation |
+| **Authentication** | 5 | 60s | Prevent brute force attacks |
+
+## Testing Rate Limits
+
+```bash
+# Test rate limit on friend URL endpoint
+for i in {1..105}; do
+  curl -X GET "http://localhost:8080/api/friend-url/abc123-def456"
+  echo "Request $i"
+done
+```
+
+Expected behavior:
+- Requests 1-100: Succeed (200 OK)
+- Requests 101+: Fail (429 Too Many Requests)
+
+## Monitoring Rate Limits
+
+Track rate limit metrics:
+
+```java
+@Around("@annotation(rateLimit)")
+public Object checkRateLimit(ProceedingJoinPoint joinPoint, RateLimiter rateLimit) throws Throwable {
+    String clientKey = getClientKey(rateLimit.key());
+    
+    if (!rateLimiterService.isAllowed(clientKey, rateLimit.requests(), rateLimit.window())) {
+        // Log rate limit exceeded
+        log.warn("Rate limit exceeded for key: {}", clientKey);
+        
+        // Optionally publish metric to monitoring system
+        metricsService.incrementCounter("rate_limit_exceeded", 
+            Map.of("key", rateLimit.key()));
+        
+        long retryAfter = rateLimiterService.getTimeToReset(clientKey);
+        throw new RateLimitExceededException(retryAfter);
+    }
+    
+    return joinPoint.proceed();
+}
+```
+
+## Bypassing Rate Limits
+
+For trusted services or administrators:
+
+```java
+private String getClientKey(String customKey) {
+    HttpServletRequest request = ((ServletRequestAttributes) 
+        RequestContextHolder.currentRequestAttributes()).getRequest();
+    
+    String ip = request.getRemoteAddr();
+    
+    // Bypass rate limiting for internal IPs
+    if (ip.startsWith("10.") || ip.startsWith("192.168.")) {
+        return null; // null key = bypass rate limiting
+    }
+    
+    // Check for admin API key
+    String apiKey = request.getHeader("X-Admin-API-Key");
+    if (adminApiKeyService.isValid(apiKey)) {
+        return null; // Bypass for valid admin keys
+    }
+    
+    String path = request.getRequestURI();
+    
+    if (customKey != null && !customKey.isEmpty()) {
+        return customKey + ":" + ip;
+    }
+    
+    return path + ":" + ip;
+}
+```
+
+<Warning>
+  Bypass mechanisms should be carefully controlled and audited to prevent abuse.
+</Warning>
+
+## Distributed Rate Limiting
+
+The Redis-backed implementation naturally supports distributed rate limiting across multiple application instances:
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Server 1  │     │   Server 2  │     │   Server 3  │
+└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
+       │                   │                   │
+       └───────────┬───────┴───────────────────┘
+                   │
+            ┌──────▼──────┐
+            │    Redis    │
+            │   (Shared)  │
+            └─────────────┘
+```
+
+<Info>
+  All application instances share the same Redis instance, ensuring consistent rate limiting across your entire cluster.
+</Info>
+
+## Security Considerations
+
+<Warning>
+  **IP Spoofing**: If behind a proxy, ensure you're reading the correct IP header (X-Forwarded-For) and validating it's trustworthy.
+</Warning>
+
+<Note>
+  **Redis Availability**: If Redis becomes unavailable, decide whether to fail open (allow requests) or fail closed (reject requests). Current implementation will throw an exception.
+</Note>
+
+<Info>
+  **DDoS Protection**: Rate limiting helps mitigate DDoS attacks but should be combined with infrastructure-level protections (e.g., Cloudflare, AWS Shield).
+</Info>

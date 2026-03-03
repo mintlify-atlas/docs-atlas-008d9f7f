@@ -1,0 +1,619 @@
+---
+title: 'Backend Architecture'
+description: 'Spring Boot application structure, services, controllers, and Kafka streaming'
+---
+
+## Overview
+
+The backend is a Spring Boot 4.0.1 application built with Java 17, following a layered architecture pattern with clear separation of concerns.
+
+## Technology Stack
+
+<CardGroup cols={2}>
+  <Card title="Spring Boot" icon="leaf">
+    **Version**: 4.0.1
+    
+    Core framework providing dependency injection, auto-configuration, and production-ready features.
+  </Card>
+  <Card title="PostgreSQL" icon="database">
+    **Driver**: org.postgresql.Driver
+    
+    Primary relational database for user accounts and file metadata.
+  </Card>
+  <Card title="Redis" icon="bolt">
+    **SSL**: rediss:// protocol
+    
+    Caching layer and rate limiting storage with 1-hour TTL.
+  </Card>
+  <Card title="Apache Kafka" icon="stream">
+    **Protocol**: SASL_SSL
+    
+    Event streaming for file uploads, clicks, and expiry processing.
+  </Card>
+</CardGroup>
+
+## Project Structure
+
+```
+backend/src/main/java/org/closeness/decoder/
+├── ClosenessDecoderApplication.java    # Main entry point
+├── annotation/
+│   └── RateLimiter.java                # Rate limiting annotation
+├── aspect/
+│   └── RateLimitAspect.java            # AOP for rate limiting
+├── configuration/
+│   ├── ClosenessDecoderInterceptor.java
+│   ├── KafkaConfig.java                # Kafka producer & streams config
+│   ├── KafkaTopic.java                 # Topic enum definitions
+│   ├── S3Config.java                   # Backblaze B2 client beans
+│   ├── S3Properties.java               # S3 configuration properties
+│   ├── SecurityConfig.java             # Spring Security configuration
+│   └── WebConfig.java                  # Web MVC configuration
+├── controller/
+│   ├── AuthController.java             # Authentication endpoints
+│   └── S3Controller.java               # File upload/download endpoints
+├── dto/
+│   ├── AuthRequest.java
+│   ├── AuthResponse.java
+│   ├── ExpiryStateStore.java           # Kafka state store model
+│   ├── FriendClickEvent.java           # Click event model
+│   ├── FriendLinkDto.java
+│   ├── FriendMessageDto.java
+│   ├── FriendUploadEvent.java          # Upload event model
+│   └── UserDto.java
+├── exception/
+│   ├── AuthException.java
+│   ├── GlobalExceptionHandler.java     # @RestControllerAdvice
+│   └── RateLimitExceededException.java
+├── model/
+│   ├── FriendUrl.java                  # JPA entity for file metadata
+│   └── User.java                       # JPA entity for user accounts
+├── repository/
+│   ├── FriendUrlRepository.java        # Spring Data JPA repository
+│   └── UserRepository.java             # Spring Data JPA repository
+├── security/
+│   ├── JwtAuthenticationFilter.java    # JWT validation filter
+│   └── JwtTokenProvider.java           # JWT generation/parsing
+├── service/
+│   ├── AuthService.java                # Authentication interface
+│   ├── KafkaProducer.java              # Event publishing service
+│   ├── KafkaStreamsTopology.java       # Kafka Streams topology
+│   ├── RateLimiterService.java
+│   ├── RedisCacheService.java          # Redis operations
+│   ├── S3CleanupService.java           # File cleanup & click aggregation
+│   ├── S3Service.java                  # S3 operations interface
+│   ├── impl/
+│   │   ├── AuthServiceImpl.java        # Google OAuth implementation
+│   │   └── S3ServiceImpl.java          # S3 operations implementation
+│   └── processor/
+│       ├── ClickEventProcessor.java    # Kafka Streams processor
+│       └── UploadEventProcessor.java   # Kafka Streams processor
+└── utils/
+    └── AuthUtils.java                  # Authentication utilities
+```
+
+<Info>
+42 Java source files organized in 11 packages
+</Info>
+
+## Layered Architecture
+
+### Controller Layer
+
+RESTful API endpoints with Spring Web MVC.
+
+#### AuthController
+
+**Location**: `org/closeness/decoder/controller/AuthController.java`
+
+```java
+@RestController
+@RequestMapping("/api/auth")
+public class AuthController {
+    @PostMapping("/signup")    // Google OAuth signup
+    @PostMapping("/signin")    // Google OAuth signin
+    @GetMapping("/me")         // Get current user
+    @PostMapping("/logout")    // Clear security context
+}
+```
+
+**Key Features**:
+- Google OAuth credential validation (AuthController.java:23)
+- JWT token issuance via `AuthService`
+- Current user retrieval from security context (AuthController.java:36)
+
+#### S3Controller
+
+**Location**: `org/closeness/decoder/controller/S3Controller.java`
+
+```java
+@RestController
+@RequestMapping("/api")
+public class S3Controller {
+    @PostMapping("/upload")                // Basic file upload
+    @PostMapping("/friend-url/upload")     // Upload with friend code
+    @GetMapping("/friend-url/{friendCode}") // Retrieve presigned URL
+    @GetMapping("/presigned-url/{key}")    // Generate presigned URL
+}
+```
+
+**Key Features**:
+- File validation: PDF only, max 10MB (S3Controller.java:37)
+- Rate limiting on friend URL access: 100 requests/60 seconds (S3Controller.java:51)
+- Multipart file handling with Spring's `MultipartFile`
+
+### Service Layer
+
+Business logic and external service integration.
+
+#### S3ServiceImpl
+
+**Location**: `org/closeness/decoder/service/impl/S3ServiceImpl.java`
+
+**Dependencies** (injected via constructor):
+- `S3Client` - AWS SDK client for Backblaze B2
+- `S3Presigner` - Generates presigned URLs
+- `S3Properties` - Configuration properties
+- `FriendUrlRepository` - Database access
+- `RedisCacheService` - Caching
+- `KafkaProducer` - Event publishing
+
+**Core Methods**:
+
+```java
+// Upload file and generate shareable link
+public ResponseEntity<?> sendObjectAndGeneratePresignedUrl(MultipartFile file)
+```
+
+**Flow** (S3ServiceImpl.java:87-132):
+1. Validate file format (PDF only)
+2. Generate S3 key: `{date}/{UUID}.pdf` (S3ServiceImpl.java:187)
+3. Upload to Backblaze B2 via `s3Client.putObject()` (S3ServiceImpl.java:176)
+4. Generate presigned URL with 45-minute expiry (S3ServiceImpl.java:77)
+5. Save `FriendUrl` entity with 60-minute expiry (S3ServiceImpl.java:108)
+6. Cache presigned URL in Redis (S3ServiceImpl.java:120)
+7. Publish upload event to Kafka (S3ServiceImpl.java:122)
+8. Return friend code (UUID)
+
+```java
+// Retrieve friend URL by code
+public ResponseEntity<FriendMessageDto> getFriendUrl(UUID friendCode)
+```
+
+**Flow** (S3ServiceImpl.java:135-159):
+1. Check Redis cache first (S3ServiceImpl.java:139)
+2. If cache miss, query PostgreSQL (S3ServiceImpl.java:148)
+3. Verify `isActive` status (expired links return "Failed")
+4. Publish click event to Kafka (S3ServiceImpl.java:142)
+5. Return presigned URL or failure message
+
+#### AuthServiceImpl
+
+**Location**: `org/closeness/decoder/service/impl/AuthServiceImpl.java`
+
+**Dependencies**:
+- `UserRepository` - Database access
+- `GoogleIdTokenVerifier` - Validates Google OAuth tokens (AuthServiceImpl.java:36)
+- `JwtTokenProvider` - Generates JWT tokens
+
+**Google OAuth Flow** (AuthServiceImpl.java:46-72):
+
+```java
+public AuthResponse signUp(String googleCredential) {
+    // 1. Verify Google token
+    GoogleIdToken.Payload payload = verifyGoogleToken(googleCredential);
+    
+    // 2. Extract user info
+    String googleId = payload.getSubject();
+    String email = payload.getEmail();
+    String name = (String) payload.get("name");
+    String picture = (String) payload.get("picture");
+    
+    // 3. Check for existing user
+    if (userRepository.existsByGoogleId(googleId)) {
+        throw new AuthException("User already exists");
+    }
+    
+    // 4. Create and save user
+    User user = new User();
+    user.setGoogleId(googleId);
+    user.setEmail(email);
+    // ...
+    User savedUser = userRepository.save(user);
+    
+    // 5. Generate JWT
+    String accessToken = jwtTokenProvider.generateToken(savedUser);
+    
+    return buildAuthResponse(savedUser, accessToken);
+}
+```
+
+**Sign-in Flow** (AuthServiceImpl.java:75-112):
+- Verifies Google token
+- Finds existing user by `googleId` or `email`
+- Updates user info if changed (name, picture)
+- Generates fresh JWT token
+
+#### S3CleanupService
+
+**Location**: `org/closeness/decoder/service/S3CleanupService.java`
+
+Invoked by Kafka Streams processors for cleanup operations.
+
+```java
+@Transactional
+public void handleExpiry(String friendCode, String storageKey) {
+    // Mark FriendUrl as inactive in database
+    friendUrlRepository.updateActiveStatus(UUID.fromString(friendCode));
+    
+    // Delete file from Backblaze B2
+    s3Service.deleteObject(storageKey);
+}
+
+@Transactional
+public void flushClickCount(String friendCode, Long clicks) {
+    // Batch update click count from aggregated Kafka state
+    friendUrlRepository.incrementClickCount(UUID.fromString(friendCode), clicks);
+}
+```
+
+### Configuration Layer
+
+#### S3Config
+
+**Location**: `org/closeness/decoder/configuration/S3Config.java`
+
+Configures AWS SDK clients for Backblaze B2 compatibility.
+
+```java
+@Bean
+public S3Client s3Client() {
+    AwsBasicCredentials credentials = AwsBasicCredentials.create(
+        props.getAccessKey(), 
+        props.getSecretKey()
+    );
+    
+    return S3Client.builder()
+        .endpointOverride(URI.create(props.getEndpoint()))  // Backblaze endpoint
+        .region(Region.of(props.getRegion()))
+        .credentialsProvider(StaticCredentialsProvider.create(credentials))
+        .serviceConfiguration(S3Configuration.builder()
+            .pathStyleAccessEnabled(false)  // Virtual-hosted style
+            .build())
+        .build();
+}
+```
+
+**Properties Binding** (org/closeness/decoder/configuration/S3Properties.java):
+- `back-blaze.s3.endpoint` - Backblaze B2 endpoint URL
+- `back-blaze.s3.region` - S3 region
+- `back-blaze.s3.bucket` - Bucket name
+- `back-blaze.s3.access-key` - Access key ID
+- `back-blaze.s3.secret-key` - Secret access key
+
+#### KafkaConfig
+
+**Location**: `org/closeness/decoder/configuration/KafkaConfig.java`
+
+Configures Kafka producers and Kafka Streams.
+
+```java
+@Configuration
+@EnableKafkaStreams
+public class KafkaConfig {
+    
+    private Map<String, Object> commonConfigs() {
+        Map<String, Object> configs = new HashMap<>();
+        configs.put(BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        configs.put(SECURITY_PROTOCOL_CONFIG, "SASL_SSL");
+        configs.put(SASL_MECHANISM, "PLAIN");
+        configs.put(SASL_JAAS_CONFIG, 
+            "org.apache.kafka.common.security.plain.PlainLoginModule required "
+            + "username=\"" + apiKey + "\" "
+            + "password=\"" + apiSecret + "\";");
+        return configs;
+    }
+    
+    @Bean
+    public ProducerFactory<String, Object> producerFactory() {
+        configs.put(KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        configs.put(VALUE_SERIALIZER_CLASS_CONFIG, JacksonJsonSerializer.class);
+        return new DefaultKafkaProducerFactory<>(configs);
+    }
+    
+    @Bean
+    public KafkaStreamsConfiguration streamsConfig() {
+        configs.put(APPLICATION_ID_CONFIG, "closeness-decoder-streams");
+        configs.put(DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
+        configs.put(DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
+        return new KafkaStreamsConfiguration(configs);
+    }
+}
+```
+
+#### SecurityConfig
+
+**Location**: `org/closeness/decoder/configuration/SecurityConfig.java`
+
+```java
+@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http
+        .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+        .csrf(AbstractHttpConfigurer::disable)  // Stateless JWT
+        .sessionManagement(session -> 
+            session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
+            .requestMatchers("/api/auth/me").authenticated()
+            .anyRequest().authenticated())
+        .addFilterBefore(jwtAuthenticationFilter, 
+            UsernamePasswordAuthenticationFilter.class);
+    
+    return http.build();
+}
+```
+
+**Public Endpoints** (SecurityConfig.java:35-44):
+- `/api/auth/signup` - Sign up
+- `/api/auth/signin` - Sign in
+- `/api/friend-url/*` - Friend URL access (no auth required)
+- `/actuator/health` - Health check
+
+**CORS Configuration** (SecurityConfig.java:64-76):
+- Allowed origins from `app.cors.allowed-origins`
+- All standard HTTP methods
+- Credentials allowed for cookie support
+- 1-hour preflight cache
+
+### Security Layer
+
+#### JwtAuthenticationFilter
+
+**Location**: `org/closeness/decoder/security/JwtAuthenticationFilter.java`
+
+Intercepts requests to validate JWT tokens.
+
+**Flow**:
+1. Extract token from `Authorization: Bearer <token>` header
+2. Validate token via `JwtTokenProvider.validateToken()`
+3. Extract user ID from token claims
+4. Load user from database
+5. Set `Authentication` in `SecurityContextHolder`
+6. Continue filter chain
+
+### Event Streaming Layer
+
+#### KafkaProducer
+
+**Location**: `org/closeness/decoder/service/KafkaProducer.java`
+
+Publishes events to Kafka topics.
+
+```java
+public void publishUploadEvent(String friendCode, String storageKey,
+                               long createdAt, long expiresAt) {
+    FriendUploadEvent event = new FriendUploadEvent(
+        friendCode, storageKey, createdAt, expiresAt
+    );
+    
+    kafkaTemplate.send(
+        KafkaTopic.UPLOAD_EVENT.getTopicName(),  // "friend-file-upload-events"
+        friendCode,
+        event
+    ).whenComplete((result, ex) -> {
+        if (ex != null) {
+            log.error("Failed to send: {}", ex.getMessage());
+        } else {
+            log.info("Sent to partition {} offset {}",
+                result.getRecordMetadata().partition(),
+                result.getRecordMetadata().offset());
+        }
+    });
+}
+```
+
+**Topics** (org/closeness/decoder/configuration/KafkaTopic.java):
+- `friend-file-upload-events` - File upload with expiry metadata
+- `friend-link-click-events` - Friend URL access events
+
+#### KafkaStreamsTopology
+
+**Location**: `org/closeness/decoder/service/KafkaStreamsTopology.java`
+
+Defines Kafka Streams processing topology.
+
+```java
+@Bean
+public Topology buildStreamsTopology(StreamsBuilder builder) {
+    registerStateStores(builder);
+    
+    // Process upload events for expiry tracking
+    KStream<String, String> uploadStream = builder.stream(
+        KafkaTopic.UPLOAD_EVENT.getTopicName(),
+        Consumed.with(Serdes.String(), Serdes.String())
+    );
+    uploadStream.process(
+        () -> new UploadEventProcessor(s3CleanupService, objectMapper),
+        EXPIRY_STORE,      // Persistent key-value store
+        CLICK_STORE
+    );
+    
+    // Process click events for aggregation
+    KStream<String, String> clickStream = builder.stream(
+        KafkaTopic.CLICK_EVENT.getTopicName(),
+        Consumed.with(Serdes.String(), Serdes.String())
+    );
+    clickStream.process(
+        () -> new ClickEventProcessor(s3CleanupService, objectMapper),
+        CLICK_STORE        // Persistent key-value store
+    );
+    
+    return builder.build();
+}
+```
+
+**State Stores** (KafkaStreamsTopology.java:74-88):
+- `expiry-store` - Tracks file expiry schedules (key: friendCode, value: ExpiryStateStore)
+- `click-store` - Aggregates click counts (key: friendCode, value: Long)
+
+<Note>
+Kafka Streams processors run continuously in the background, monitoring events and triggering cleanup operations.
+</Note>
+
+## Data Models
+
+### JPA Entities
+
+#### User
+
+**Location**: `org/closeness/decoder/model/User.java`
+
+```java
+@Entity
+@Table(name = "users")
+public class User {
+    @Id
+    @GeneratedValue
+    private UUID id;
+    
+    @Column(unique = true)
+    private String googleId;
+    
+    @Column(unique = true, nullable = false)
+    private String email;
+    
+    private String userName;
+    private String profilePicture;
+    
+    @OneToMany(mappedBy = "userId")
+    private List<FriendUrl> friendUrls;
+}
+```
+
+#### FriendUrl
+
+**Location**: `org/closeness/decoder/model/FriendUrl.java`
+
+```java
+@Entity
+@Table(name = "friend_urls")
+public class FriendUrl {
+    @Id
+    @GeneratedValue
+    private UUID id;                    // Friend code
+    
+    private UUID userId;
+    private String sourceUrl;            // Presigned URL
+    private String sourceKey;            // S3 object key
+    private Integer expiryTimeMinutes;   // Always 60
+    private LocalDateTime createdAt;
+    private LocalDateTime expiresAt;
+    private Boolean isActive;            // false after expiry
+    private Long clickCount;             // Aggregated from Kafka
+}
+```
+
+### Database Configuration
+
+**Hibernate DDL Mode**: `validate` (application.yaml:24)
+- Does not auto-create/update schema
+- Validates entities against existing schema
+- Requires manual migration scripts for production
+
+**Dialect**: `org.hibernate.dialect.PostgreSQLDialect` (application.yaml:30)
+
+## Dependency Injection
+
+Spring Boot uses constructor-based dependency injection throughout the codebase.
+
+**Example** (S3ServiceImpl.java:44):
+```java
+public S3ServiceImpl(
+    S3Client s3Client,                  // @Bean from S3Config
+    S3Presigner s3Presigner,           // @Bean from S3Config
+    S3Properties s3Properties,         // @ConfigurationProperties
+    FriendUrlRepository friendUrlRepository,
+    AuthUtils authUtils,
+    RedisCacheService redisCacheService,
+    KafkaProducer kafkaProducer
+) {
+    this.s3Client = s3Client;
+    // ...
+}
+```
+
+<Info>
+No `@Autowired` annotations needed with constructor injection (recommended Spring practice).
+</Info>
+
+## Exception Handling
+
+**Location**: `org/closeness/decoder/exception/GlobalExceptionHandler.java`
+
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+    
+    @ExceptionHandler(AuthException.class)
+    public ResponseEntity<?> handleAuthException(AuthException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+            .body(Map.of("error", ex.getMessage()));
+    }
+    
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<?> handleRateLimitException(RateLimitExceededException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+            .body(Map.of("error", ex.getMessage()));
+    }
+    
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<?> handleGenericException(Exception ex) {
+        log.error("Unexpected error", ex);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(Map.of("error", "An unexpected error occurred"));
+    }
+}
+```
+
+## Rate Limiting
+
+**Annotation**: `org/closeness/decoder/annotation/RateLimiter.java`
+
+```java
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface RateLimiter {
+    int requests() default 100;
+    int window() default 60;     // seconds
+    String key() default "";
+}
+```
+
+**Usage** (S3Controller.java:51):
+```java
+@GetMapping("/friend-url/{friendCode}")
+@RateLimiter(requests = 100, window = 60, key = "get-friend-url")
+public ResponseEntity<FriendMessageDto> getFriendUrl(@PathVariable UUID friendCode) {
+    return s3Service.getFriendUrl(friendCode);
+}
+```
+
+**Implementation**: AOP aspect using Redis for distributed rate limiting.
+
+## Build & Packaging
+
+**Build Tool**: Maven
+
+**pom.xml** highlights:
+- Parent: `spring-boot-starter-parent:4.0.1`
+- Java Version: 17
+- Packaging: JAR with embedded Tomcat
+- Lombok annotation processing configured
+
+**Build Command**:
+```bash
+mvn clean package -DskipTests
+```
+
+**Output**: `target/Closeness-Decoder-0.0.1-SNAPSHOT.jar`

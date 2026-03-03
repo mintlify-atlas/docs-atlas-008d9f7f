@@ -1,0 +1,95 @@
+---
+title: "Generate Friend URL"
+description: "Upload a PDF file and generate a shareable friend URL with presigned access"
+---
+
+## POST /api/friend-url/upload
+
+Uploads a PDF file to S3-compatible storage and generates a shareable friend URL. This endpoint combines file upload with presigned URL generation and creates a time-limited friend code that can be shared with others.
+
+### Authentication
+
+Requires JWT authentication. Include the JWT token in the `Authorization` header:
+
+```
+Authorization: Bearer <token>
+```
+
+### Request
+
+<ParamField body="file" type="file" required>
+  The PDF file to upload. Must be a valid PDF file (Content-Type: application/pdf).
+</ParamField>
+
+<Warning>
+  File size must not exceed 10MB. Only PDF files are accepted.
+</Warning>
+
+### Response
+
+<ResponseField name="friendCode" type="UUID">
+  A unique identifier that can be used to retrieve the presigned URL for the uploaded file. This code expires after 60 minutes.
+</ResponseField>
+
+### Example Request
+
+```bash cURL
+curl -X POST https://api.closeness-decoder.com/api/friend-url/upload \
+  -H "Authorization: Bearer <your_jwt_token>" \
+  -F "file=@/path/to/document.pdf"
+```
+
+### Response Examples
+
+<Expandable title="200 OK - Success">
+  ```json
+  {
+    "friendCode": "550e8400-e29b-41d4-a716-446655440000"
+  }
+  ```
+</Expandable>
+
+<Expandable title="400 Bad Request - Empty File">
+  ```json
+  "File is not present"
+  ```
+</Expandable>
+
+<Expandable title="400 Bad Request - Invalid File Type">
+  ```json
+  "Only PDF file format is supported"
+  ```
+</Expandable>
+
+<Expandable title="401 Unauthorized">
+  Returned when JWT token is missing or invalid.
+</Expandable>
+
+<Expandable title="500 Internal Server Error">
+  ```json
+  "Error message describing what went wrong"
+  ```
+</Expandable>
+
+### Implementation Details
+
+- Files are uploaded to S3 with keys in the format: `YYYY-MM-DD/<uuid>.pdf`
+- A presigned URL is generated with 45 minutes expiration
+- The friend URL mapping is stored in PostgreSQL with 60 minutes expiration
+- The mapping is also cached in Redis for faster access
+- Upload and click events are published to Kafka for analytics
+- The returned `friendCode` can be used with `GET /api/friend-url/{friendCode}` to retrieve the presigned URL
+
+### Friend URL Lifecycle
+
+1. File is uploaded to S3 storage
+2. Presigned URL is generated (expires in 45 minutes)
+3. Friend URL record is created in database (expires in 60 minutes)
+4. Friend code is cached in Redis for fast lookups
+5. Upload event is published to Kafka
+6. Friend code can be shared with others to access the file
+
+### Source Code
+
+- Controller: `controller/S3Controller.java:43`
+- Service implementation: `service/impl/S3ServiceImpl.java:87`

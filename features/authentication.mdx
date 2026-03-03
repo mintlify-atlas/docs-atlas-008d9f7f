@@ -1,0 +1,385 @@
+---
+title: "Authentication"
+description: "Google OAuth 2.0 integration with JWT token-based authentication for secure user management"
+---
+
+Closeness Decoder uses Google OAuth 2.0 for user authentication combined with JWT tokens for session management. This provides a secure, stateless authentication system that eliminates the need for password management.
+
+## Overview
+
+The authentication system consists of three main components:
+
+1. **Google OAuth 2.0 Verification** - Validates Google ID tokens from the frontend
+2. **JWT Token Generation** - Creates application-specific JWT tokens for authenticated sessions
+3. **JWT Authentication Filter** - Validates JWT tokens on protected endpoints
+
+## Authentication Flow
+
+<Steps>
+  <Step title="User initiates Google Sign-In">
+    Frontend displays Google Sign-In button and receives credential from Google
+  </Step>
+  <Step title="Backend validates Google token">
+    Backend verifies the Google ID token using Google's token verifier
+  </Step>
+  <Step title="User lookup or creation">
+    System checks if user exists by Google ID or email, creates new user if needed
+  </Step>
+  <Step title="JWT token generation">
+    Backend generates application JWT token containing user information
+  </Step>
+  <Step title="Client stores token">
+    Frontend receives and stores JWT token for subsequent API requests
+  </Step>
+</Steps>
+
+## Google OAuth Integration
+
+The system uses the Google API client library to verify ID tokens received from the frontend.
+
+### Token Verification
+
+```java AuthServiceImpl.java
+private GoogleIdToken.Payload verifyGoogleToken(String credential) {
+    try {
+        GoogleIdToken idToken = verifier.verify(credential);
+        if (idToken == null) {
+            throw new AuthException("Invalid Google token");
+        }
+        return idToken.getPayload();
+    } catch (Exception e) {
+        log.error("Error verifying Google token", e);
+        throw new AuthException("Failed to verify Google token: " + e.getMessage());
+    }
+}
+```
+
+The `GoogleIdTokenVerifier` is configured with your Google Client ID to ensure tokens are intended for your application:
+
+```java AuthServiceImpl.java
+this.verifier = new GoogleIdTokenVerifier.Builder(
+        new NetHttpTransport(),
+        GsonFactory.getDefaultInstance()
+)
+        .setAudience(Collections.singletonList(googleClientId))
+        .build();
+```
+
+## Sign Up Process
+
+When a new user signs up, the system extracts user information from the Google token payload and creates a new user record.
+
+```java AuthServiceImpl.java
+@Override
+public AuthResponse signUp(String googleCredential) {
+    GoogleIdToken.Payload payload = verifyGoogleToken(googleCredential);
+
+    String googleId = payload.getSubject();
+    String email = payload.getEmail();
+    String name = (String) payload.get("name");
+    String picture = (String) payload.get("picture");
+
+    // Check if user already exists
+    if (userRepository.existsByGoogleId(googleId) || userRepository.existsByEmail(email)) {
+        throw new AuthException("User already exists. Please sign in instead.");
+    }
+
+    // Create new user
+    User user = new User();
+    user.setGoogleId(googleId);
+    user.setEmail(email);
+    user.setUserName(name);
+    user.setProfilePicture(picture);
+
+    User savedUser = userRepository.save(user);
+    String accessToken = jwtTokenProvider.generateToken(savedUser);
+
+    return buildAuthResponse(savedUser, accessToken);
+}
+```
+
+<Note>
+  The system prevents duplicate accounts by checking both Google ID and email address before creating a new user.
+</Note>
+
+## Sign In Process
+
+For returning users, the system verifies the Google token and updates any changed profile information:
+
+```java AuthServiceImpl.java
+@Override
+public AuthResponse signIn(String googleCredential) {
+    GoogleIdToken.Payload payload = verifyGoogleToken(googleCredential);
+
+    String googleId = payload.getSubject();
+    String email = payload.getEmail();
+
+    // Find existing user
+    User user = userRepository.findByGoogleId(googleId)
+            .or(() -> userRepository.findByEmail(email))
+            .orElseThrow(() -> new AuthException("User not found. Please sign up first."));
+
+    // Update user info if changed
+    String name = (String) payload.get("name");
+    String picture = (String) payload.get("picture");
+
+    boolean updated = false;
+    if (name != null && !name.equals(user.getUserName())) {
+        user.setUserName(name);
+        updated = true;
+    }
+    if (picture != null && !picture.equals(user.getProfilePicture())) {
+        user.setProfilePicture(picture);
+        updated = true;
+    }
+
+    if (updated) {
+        user = userRepository.save(user);
+    }
+
+    String accessToken = jwtTokenProvider.generateToken(user);
+    return buildAuthResponse(user, accessToken);
+}
+```
+
+## JWT Token System
+
+After successful Google OAuth verification, the application generates its own JWT token for managing authenticated sessions.
+
+### Token Generation
+
+The JWT token includes the user's ID as the subject and additional claims like email and username:
+
+```java JwtTokenProvider.java
+public String generateToken(User user) {
+    Map<String, Object> claims = new HashMap<>();
+    claims.put("email", user.getEmail());
+    claims.put("userName", user.getUserName());
+    
+    return createToken(claims, user.getId().toString());
+}
+
+private String createToken(Map<String, Object> claims, String subject) {
+    Date now = new Date();
+    Date expiryDate = new Date(now.getTime() + jwtExpirationMs);
+
+    return Jwts.builder()
+            .claims(claims)
+            .subject(subject)
+            .issuedAt(now)
+            .expiration(expiryDate)
+            .signWith(getSigningKey())
+            .compact();
+}
+```
+
+### Token Validation
+
+The `JwtAuthenticationFilter` intercepts requests and validates JWT tokens:
+
+```java JwtAuthenticationFilter.java
+@Override
+protected void doFilterInternal(
+        @NonNull HttpServletRequest request,
+        @NonNull HttpServletResponse response,
+        @NonNull FilterChain filterChain) throws ServletException, IOException {
+
+    try {
+        String jwt = extractJwtFromRequest(request);
+
+        if (StringUtils.hasText(jwt) && jwtTokenProvider.validateToken(jwt)) {
+            String userId = jwtTokenProvider.extractUserId(jwt);
+
+            Optional<User> userOptional = userRepository.findById(UUID.fromString(userId));
+
+            if (userOptional.isPresent()) {
+                User user = userOptional.get();
+
+                UsernamePasswordAuthenticationToken authentication =
+                        new UsernamePasswordAuthenticationToken(
+                                user,
+                                null,
+                                Collections.emptyList()
+                        );
+                authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                SecurityContextHolder.getContext().setAuthentication(authentication);
+            }
+        }
+    } catch (Exception e) {
+        log.error("Cannot set user authentication: {}", e.getMessage());
+    }
+
+    filterChain.doFilter(request, response);
+}
+```
+
+Tokens are extracted from the `Authorization` header:
+
+```java JwtAuthenticationFilter.java
+private String extractJwtFromRequest(HttpServletRequest request) {
+    String bearerToken = request.getHeader("Authorization");
+    if (StringUtils.hasText(bearerToken) && bearerToken.startsWith("Bearer ")) {
+        return bearerToken.substring(7);
+    }
+    return null;
+}
+```
+
+## Security Configuration
+
+The security configuration defines which endpoints require authentication:
+
+```java SecurityConfig.java
+private static final String[] PUBLIC_ENDPOINTS = {
+        "/api/auth/signup",
+        "/api/auth/signin",
+        "/v3/api-docs/**",
+        "/swagger-ui/**",
+        "/swagger-ui.html",
+        "/actuator/health",
+        "/actuator/info",
+        "/api/friend-url/*"
+};
+
+@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .csrf(AbstractHttpConfigurer::disable)
+            .sessionManagement(session -> 
+                    session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth
+                    .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
+                    .requestMatchers("/api/auth/me").authenticated()
+                    .requestMatchers("/api/auth/logout").authenticated()
+                    .anyRequest().authenticated())
+            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+
+    return http.build();
+}
+```
+
+<Warning>
+  The application uses `SessionCreationPolicy.STATELESS` - no HTTP sessions are created. All authentication state is maintained through JWT tokens.
+</Warning>
+
+## API Endpoints
+
+### POST /api/auth/signup
+
+Register a new user with Google OAuth credentials.
+
+**Request:**
+```json
+{
+  "credential": "google_id_token_here"
+}
+```
+
+**Response:**
+```json
+{
+  "accessToken": "jwt_token_here",
+  "user": {
+    "id": "uuid",
+    "email": "user@example.com",
+    "userName": "John Doe",
+    "profilePicture": "https://..."
+  }
+}
+```
+
+### POST /api/auth/signin
+
+Sign in an existing user.
+
+**Request:**
+```json
+{
+  "credential": "google_id_token_here"
+}
+```
+
+**Response:** Same as signup
+
+### GET /api/auth/me
+
+Get current authenticated user information. Requires JWT token in Authorization header.
+
+**Headers:**
+```
+Authorization: Bearer jwt_token_here
+```
+
+**Response:**
+```json
+{
+  "id": "uuid",
+  "email": "user@example.com",
+  "userName": "John Doe",
+  "profilePicture": "https://..."
+}
+```
+
+### POST /api/auth/logout
+
+Clear the security context. Client should also discard the JWT token.
+
+```java AuthController.java
+@PostMapping("/logout")
+public ResponseEntity<Void> logout() {
+    SecurityContextHolder.clearContext();
+    return ResponseEntity.ok().build();
+}
+```
+
+## Configuration
+
+Required environment variables for authentication:
+
+```yaml application.yaml
+google:
+  client-id: ${GOOGLE_CLIENT_ID}
+
+app:
+  jwt:
+    secret: ${JWT_SECRET}
+    expiration-ms: ${JWT_EXPIRATION_MS}
+```
+
+<Accordion title="Configuration Details">
+  - **GOOGLE_CLIENT_ID**: Your Google OAuth 2.0 client ID from Google Cloud Console
+  - **JWT_SECRET**: Base64-encoded secret key for signing JWT tokens (min 256 bits)
+  - **JWT_EXPIRATION_MS**: Token expiration time in milliseconds (e.g., 86400000 for 24 hours)
+</Accordion>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Token Storage" icon="shield-halved">
+    Store JWT tokens securely in the client (httpOnly cookies or secure localStorage)
+  </Card>
+  <Card title="Token Expiration" icon="clock">
+    Set reasonable expiration times and implement token refresh if needed
+  </Card>
+  <Card title="HTTPS Only" icon="lock">
+    Always use HTTPS in production to protect tokens in transit
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation">
+    Handle expired tokens gracefully and redirect to login
+  </Card>
+</CardGroup>
+
+## Security Considerations
+
+<Note>
+  **Stateless Architecture**: The JWT-based system means tokens cannot be revoked server-side. If a token is compromised, it remains valid until expiration.
+</Note>
+
+<Warning>
+  **Secret Key Security**: The JWT secret key (`JWT_SECRET`) must be kept secure and never committed to version control. Use strong, randomly-generated keys (minimum 256 bits).
+</Warning>
+
+<Info>
+  **CORS Configuration**: The security config includes CORS settings that can be customized via the `CORS_ALLOWED_ORIGINS` environment variable.
+</Info>

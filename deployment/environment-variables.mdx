@@ -1,0 +1,281 @@
+---
+title: Environment Variables
+description: Complete reference for all required environment variables in Closeness Decoder
+---
+
+This page documents all environment variables required to run Closeness Decoder in production. Variables are organized by component and service.
+
+## Backend Environment Variables
+
+### Database Configuration
+
+<ParamField path="DB_URL" type="string" required>
+  PostgreSQL database connection URL.
+  
+  **Format:** `jdbc:postgresql://<host>:<port>/<database>`
+  
+  **Example:** `jdbc:postgresql://localhost:5432/closeness_decoder`
+</ParamField>
+
+<ParamField path="DB_USERNAME" type="string" required>
+  PostgreSQL database username with read/write permissions.
+  
+  **Example:** `postgres`
+</ParamField>
+
+<ParamField path="DB_PASSWORD" type="string" required>
+  PostgreSQL database password.
+  
+  <Warning>
+    Keep this value secure. Never commit database passwords to version control.
+  </Warning>
+</ParamField>
+
+### Redis Configuration
+
+<ParamField path="REDIS_HOST" type="string" required>
+  Redis server hostname or IP address.
+  
+  **Example:** `redis-12345.c1.us-east-1.ec2.cloud.redislabs.com`
+</ParamField>
+
+<ParamField path="REDIS_PORT" type="string" required>
+  Redis server port number.
+  
+  **Default:** `6379` (unencrypted) or `6380` (TLS/SSL)
+  
+  **Example:** `6380`
+</ParamField>
+
+<ParamField path="REDIS_PASSWORD" type="string" required>
+  Redis authentication password.
+  
+  <Warning>
+    The application uses `rediss://` protocol for secure TLS connections. Ensure your Redis instance supports TLS.
+  </Warning>
+</ParamField>
+
+### Backblaze B2 Storage
+
+<ParamField path="B2_ENDPOINT" type="string" required>
+  Backblaze B2 S3-compatible API endpoint.
+  
+  **Format:** `https://s3.<region>.backblazeb2.com`
+  
+  **Example:** `https://s3.us-west-001.backblazeb2.com`
+</ParamField>
+
+<ParamField path="B2_REGION" type="string" required>
+  Backblaze B2 region identifier.
+  
+  **Example:** `us-west-001`
+</ParamField>
+
+<ParamField path="B2_BUCKET" type="string" required>
+  Name of your Backblaze B2 bucket for storing friend URLs and media.
+  
+  **Example:** `closeness-decoder-storage`
+</ParamField>
+
+<ParamField path="B2_ACCESS_KEY" type="string" required>
+  Backblaze B2 application key ID (access key).
+  
+  Generate this from the Backblaze B2 dashboard under App Keys.
+</ParamField>
+
+<ParamField path="B2_SECRET_KEY" type="string" required>
+  Backblaze B2 application key (secret key).
+  
+  <Warning>
+    This value is only shown once when creating an App Key. Store it securely.
+  </Warning>
+</ParamField>
+
+### Authentication
+
+<ParamField path="GOOGLE_CLIENT_ID" type="string" required>
+  Google OAuth 2.0 client ID for user authentication.
+  
+  Obtain this from the [Google Cloud Console](https://console.cloud.google.com/apis/credentials).
+  
+  **Example:** `123456789-abcdefghijklmnop.apps.googleusercontent.com`
+</ParamField>
+
+<ParamField path="JWT_SECRET" type="string" required>
+  Secret key for signing and verifying JWT tokens.
+  
+  **Requirements:**
+  - Minimum 256 bits (32 characters) for HS256
+  - Use a cryptographically secure random string
+  
+  <Warning>
+    Never reuse JWT secrets across environments. Generate a unique secret for each deployment.
+  </Warning>
+  
+  **Generate a secure secret:**
+  ```bash
+  openssl rand -base64 32
+  ```
+</ParamField>
+
+<ParamField path="JWT_EXPIRATION_MS" type="string" required>
+  JWT token expiration time in milliseconds.
+  
+  **Example:** `86400000` (24 hours)
+  
+  **Common values:**
+  - 1 hour: `3600000`
+  - 24 hours: `86400000`
+  - 7 days: `604800000`
+</ParamField>
+
+### Application URLs
+
+<ParamField path="API_URL" type="string" default="http://localhost:8080">
+  Base URL where the backend API is deployed.
+  
+  **Production example:** `https://api.closeness-decoder.com`
+  
+  **Development default:** `http://localhost:8080`
+</ParamField>
+
+<ParamField path="BASE_URL" type="string" default="http://localhost:3000">
+  Base URL where the frontend application is deployed.
+  
+  **Production example:** `https://closeness-decoder.com`
+  
+  **Development default:** `http://localhost:3000`
+</ParamField>
+
+### CORS Configuration
+
+<ParamField path="CORS_ALLOWED_ORIGINS" type="string" required>
+  Comma-separated list of allowed origins for Cross-Origin Resource Sharing.
+  
+  **Format:** `https://domain1.com,https://domain2.com`
+  
+  **Example:** `https://closeness-decoder.com,https://www.closeness-decoder.com`
+  
+  <Warning>
+    Never use `*` in production. Explicitly list all allowed origins.
+  </Warning>
+</ParamField>
+
+## Frontend Environment Variables
+
+<ParamField path="VITE_API_URL" type="string" required>
+  Backend API base URL that the frontend will communicate with.
+  
+  **Production example:** `https://api.closeness-decoder.com`
+  
+  **Development example:** `http://localhost:8080`
+  
+  <Warning>
+    All Vite environment variables must be prefixed with `VITE_` to be exposed to the browser.
+  </Warning>
+</ParamField>
+
+<ParamField path="VITE_GOOGLE_CLIENT_ID" type="string" required>
+  Google OAuth 2.0 client ID (same as backend `GOOGLE_CLIENT_ID`).
+  
+  This must match the client ID configured in the backend.
+  
+  **Example:** `123456789-abcdefghijklmnop.apps.googleusercontent.com`
+</ParamField>
+
+## Environment File Examples
+
+<CodeGroup>
+```bash Backend (.env)
+DB_URL=jdbc:postgresql://localhost:5432/closeness_decoder
+DB_USERNAME=postgres
+DB_PASSWORD=your_secure_password
+
+REDIS_HOST=redis-12345.cloud.redislabs.com
+REDIS_PORT=6380
+REDIS_PASSWORD=your_redis_password
+
+B2_ENDPOINT=https://s3.us-west-001.backblazeb2.com
+B2_REGION=us-west-001
+B2_BUCKET=closeness-decoder-storage
+B2_ACCESS_KEY=your_b2_access_key
+B2_SECRET_KEY=your_b2_secret_key
+
+GOOGLE_CLIENT_ID=123456789-abcdefghijklmnop.apps.googleusercontent.com
+
+JWT_SECRET=your_secure_jwt_secret_minimum_32_characters
+JWT_EXPIRATION_MS=86400000
+
+API_URL=https://api.closeness-decoder.com
+BASE_URL=https://closeness-decoder.com
+CORS_ALLOWED_ORIGINS=https://closeness-decoder.com
+```
+
+```bash Frontend (.env)
+VITE_API_URL=https://api.closeness-decoder.com
+VITE_GOOGLE_CLIENT_ID=123456789-abcdefghijklmnop.apps.googleusercontent.com
+```
+</CodeGroup>
+
+## Security Best Practices
+
+<Warning>
+  **Critical Security Guidelines:**
+  - Never commit `.env` files to version control
+  - Use different secrets for each environment (dev, staging, production)
+  - Rotate secrets regularly, especially after team member changes
+  - Use secret management services (AWS Secrets Manager, HashiCorp Vault) in production
+  - Audit environment variable access in your deployment platform
+</Warning>
+
+<Accordion title="Setting up .gitignore for environment files">
+  Add these lines to your `.gitignore` file:
+  
+  ```gitignore
+  # Environment variables
+  .env
+  .env.local
+  .env.*.local
+  .env.production
+  ```
+</Accordion>
+
+## Validation
+
+To verify your environment variables are correctly configured:
+
+<Steps>
+  <Step title="Backend validation">
+    Run the Spring Boot application with debug logging:
+    ```bash
+    ./mvnw spring-boot:run
+    ```
+    
+    Check the startup logs for configuration errors.
+  </Step>
+  
+  <Step title="Frontend validation">
+    Build the Vite application:
+    ```bash
+    npm run build
+    ```
+    
+    Ensure no errors about missing environment variables appear.
+  </Step>
+  
+  <Step title="Database connection test">
+    The backend will fail to start if database credentials are incorrect.
+    
+    Look for this log message:
+    ```
+    HikariPool-1 - Start completed.
+    ```
+  </Step>
+  
+  <Step title="Redis connection test">
+    Check logs for Redis connection confirmation:
+    ```
+    Lettuce - Connected to Redis
+    ```
+  </Step>
+</Steps>

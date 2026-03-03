@@ -1,0 +1,541 @@
+---
+title: Database Setup
+description: PostgreSQL database configuration, schema, and migration guide
+---
+
+Closeness Decoder uses PostgreSQL as its primary relational database. This guide covers database setup, schema structure, and management.
+
+## Database Requirements
+
+- **PostgreSQL version**: 12 or higher (15+ recommended)
+- **Schema**: `closeness_decoder_schema`
+- **Character encoding**: UTF-8
+- **Timezone**: UTC recommended
+
+## Initial Database Setup
+
+### Local Development
+
+<Steps>
+  <Step title="Install PostgreSQL">
+    **macOS (Homebrew):**
+    ```bash
+    brew install postgresql@15
+    brew services start postgresql@15
+    ```
+    
+    **Ubuntu/Debian:**
+    ```bash
+    sudo apt update
+    sudo apt install postgresql postgresql-contrib
+    sudo systemctl start postgresql
+    ```
+    
+    **Windows:**
+    Download from [postgresql.org/download/windows](https://www.postgresql.org/download/windows/)
+  </Step>
+  
+  <Step title="Create database and user">
+    ```sql
+    -- Connect to PostgreSQL
+    psql postgres
+    
+    -- Create database
+    CREATE DATABASE closeness_decoder;
+    
+    -- Create user with password
+    CREATE USER closeness_user WITH ENCRYPTED PASSWORD 'your_secure_password';
+    
+    -- Grant privileges
+    GRANT ALL PRIVILEGES ON DATABASE closeness_decoder TO closeness_user;
+    
+    -- Connect to the database
+    \c closeness_decoder
+    
+    -- Create schema
+    CREATE SCHEMA IF NOT EXISTS closeness_decoder_schema;
+    
+    -- Grant schema privileges
+    GRANT ALL ON SCHEMA closeness_decoder_schema TO closeness_user;
+    ```
+  </Step>
+  
+  <Step title="Configure environment variables">
+    Update your `.env` file:
+    ```bash
+    DB_URL=jdbc:postgresql://localhost:5432/closeness_decoder
+    DB_USERNAME=closeness_user
+    DB_PASSWORD=your_secure_password
+    ```
+  </Step>
+</Steps>
+
+### Production Setup
+
+For production, use a managed PostgreSQL service:
+
+<Accordion title="Render PostgreSQL">
+  1. Go to [Render Dashboard](https://dashboard.render.com/)
+  2. Click **New** → **PostgreSQL**
+  3. Configure:
+     - Name: `closeness-decoder-db`
+     - Database: `closeness_decoder`
+     - User: Auto-generated
+     - Region: Same as your backend
+     - PostgreSQL Version: 15 or higher
+     - Plan: Starter or higher
+  4. Click **Create Database**
+  5. Copy the **Internal Database URL** for your backend
+  6. Create the schema:
+     ```sql
+     CREATE SCHEMA IF NOT EXISTS closeness_decoder_schema;
+     ```
+</Accordion>
+
+<Accordion title="AWS RDS PostgreSQL">
+  1. Go to [AWS RDS Console](https://console.aws.amazon.com/rds/)
+  2. Click **Create database**
+  3. Configuration:
+     - Engine: PostgreSQL 15.x
+     - Template: Production (or Dev/Test)
+     - DB instance identifier: `closeness-decoder-db`
+     - Master username: `postgres`
+     - Master password: Generate or set secure password
+     - Instance class: db.t3.micro (minimum)
+     - Storage: 20 GB (minimum)
+     - Enable storage autoscaling
+     - VPC: Same as your backend
+     - Public access: No (access via VPC)
+     - Database name: `closeness_decoder`
+  4. Create the schema after connection:
+     ```sql
+     CREATE SCHEMA IF NOT EXISTS closeness_decoder_schema;
+     ```
+</Accordion>
+
+<Accordion title="Google Cloud SQL PostgreSQL">
+  1. Go to [Cloud SQL Console](https://console.cloud.google.com/sql/)
+  2. Click **Create Instance** → **PostgreSQL**
+  3. Configuration:
+     - Instance ID: `closeness-decoder-db`
+     - Password: Set secure password
+     - PostgreSQL version: 15 or higher
+     - Region: Same as your backend
+     - Zonal or highly available
+     - Machine type: Lightweight (1 vCPU, 3.75 GB)
+     - Storage: 10 GB SSD
+  4. Create database:
+     ```sql
+     CREATE DATABASE closeness_decoder;
+     CREATE SCHEMA IF NOT EXISTS closeness_decoder_schema;
+     ```
+</Accordion>
+
+## Database Schema
+
+The application uses JPA/Hibernate with the following entity structure:
+
+### Users Table
+
+Stores user account information.
+
+```sql
+CREATE TABLE closeness_decoder_schema.users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    user_name VARCHAR(255),
+    google_id VARCHAR(255) UNIQUE,
+    profile_picture TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_users_email ON closeness_decoder_schema.users(email);
+CREATE INDEX idx_users_google_id ON closeness_decoder_schema.users(google_id);
+```
+
+<ParamField path="id" type="UUID" required>
+  Unique identifier for the user (auto-generated).
+</ParamField>
+
+<ParamField path="email" type="VARCHAR(255)" required>
+  User's email address. Must be unique across all users.
+</ParamField>
+
+<ParamField path="user_name" type="VARCHAR(255)">
+  Display name for the user.
+</ParamField>
+
+<ParamField path="google_id" type="VARCHAR(255)">
+  Google OAuth identifier. Must be unique.
+</ParamField>
+
+<ParamField path="profile_picture" type="TEXT">
+  URL to the user's profile picture (typically from Google).
+</ParamField>
+
+<ParamField path="created_at" type="TIMESTAMP" required>
+  Account creation timestamp (auto-generated).
+</ParamField>
+
+<ParamField path="updated_at" type="TIMESTAMP" required>
+  Last update timestamp (auto-updated).
+</ParamField>
+
+### Friend URLs Table
+
+Stores shareable URLs created by users.
+
+```sql
+CREATE TABLE closeness_decoder_schema.friend_urls (
+    friend_url_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    source_url TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    expiry_time_minutes INTEGER,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP,
+    is_active BOOLEAN DEFAULT true,
+    click_count BIGINT DEFAULT 0,
+    CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES closeness_decoder_schema.users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_friend_urls_user_id ON closeness_decoder_schema.friend_urls(user_id);
+CREATE INDEX idx_friend_urls_is_active ON closeness_decoder_schema.friend_urls(is_active);
+CREATE INDEX idx_friend_urls_expires_at ON closeness_decoder_schema.friend_urls(expires_at);
+```
+
+<ParamField path="friend_url_id" type="UUID" required>
+  Unique identifier for the friend URL (auto-generated).
+</ParamField>
+
+<ParamField path="user_id" type="UUID" required>
+  References the user who created this URL. Foreign key to `users.id`.
+</ParamField>
+
+<ParamField path="source_url" type="TEXT" required>
+  The publicly accessible URL (e.g., Backblaze B2 signed URL).
+</ParamField>
+
+<ParamField path="source_key" type="TEXT" required>
+  The storage key/path in Backblaze B2.
+</ParamField>
+
+<ParamField path="expiry_time_minutes" type="INTEGER">
+  Validity duration in minutes from creation.
+</ParamField>
+
+<ParamField path="created_at" type="TIMESTAMP" required>
+  URL creation timestamp (auto-generated).
+</ParamField>
+
+<ParamField path="expires_at" type="TIMESTAMP">
+  Calculated expiration timestamp.
+</ParamField>
+
+<ParamField path="is_active" type="BOOLEAN">
+  Whether the URL is currently active. Defaults to `true`.
+</ParamField>
+
+<ParamField path="click_count" type="BIGINT">
+  Number of times the URL has been accessed. Defaults to `0`.
+</ParamField>
+
+## JPA Entity Configuration
+
+The application uses Hibernate JPA with the following configuration:
+
+```yaml application.yaml
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+```
+
+### Hibernate DDL Auto Modes
+
+<Warning>
+  The application is configured with `ddl-auto: validate` for safety. This validates the schema but doesn't create or modify tables.
+</Warning>
+
+- **`validate`** (Production): Only validates schema, doesn't make changes
+- **`update`** (Development): Updates schema automatically (can be risky)
+- **`create`**: Drops and recreates schema on startup (destroys data)
+- **`create-drop`**: Creates schema on startup, drops on shutdown
+- **`none`**: No schema management
+
+### Entity Relationships
+
+```java User.java
+@Entity
+@Table(name = "users", schema = "closeness_decoder_schema")
+public class User {
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+    
+    @Column(unique = true, nullable = false)
+    private String email;
+    
+    @Column(name = "user_name")
+    private String userName;
+    
+    @Column(name = "google_id", unique = true)
+    private String googleId;
+    
+    @Column(name = "profile_picture")
+    private String profilePicture;
+    
+    @CreationTimestamp
+    @Column(updatable = false)
+    private LocalDateTime createdAt;
+    
+    @UpdateTimestamp
+    private LocalDateTime updatedAt;
+}
+```
+
+```java FriendUrl.java
+@Entity
+@Table(name = "friend_urls", schema = "closeness_decoder_schema")
+public class FriendUrl {
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    @Column(name = "friend_url_id")
+    private UUID id;
+    
+    @Column(nullable = false)
+    private UUID userId;
+    
+    @Column(nullable = false)
+    private String sourceUrl;
+    
+    @Column(nullable = false)
+    private String sourceKey;
+    
+    @Column(name = "expiry_time_minutes")
+    private Integer expiryTimeMinutes;
+    
+    @Column(nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+    
+    private LocalDateTime expiresAt;
+    
+    @Column(name = "is_active")
+    private Boolean isActive;
+    
+    @Column(name = "click_count")
+    private Long clickCount = 0L;
+}
+```
+
+## Database Migrations
+
+### Using Flyway (Recommended)
+
+For production deployments, use Flyway for version-controlled migrations.
+
+<Steps>
+  <Step title="Add Flyway dependency">
+    Add to `pom.xml`:
+    ```xml
+    <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+    ```
+  </Step>
+  
+  <Step title="Create migration directory">
+    ```bash
+    mkdir -p src/main/resources/db/migration
+    ```
+  </Step>
+  
+  <Step title="Create initial migration">
+    Create `V1__initial_schema.sql`:
+    ```sql
+    CREATE SCHEMA IF NOT EXISTS closeness_decoder_schema;
+    
+    CREATE TABLE closeness_decoder_schema.users (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        email VARCHAR(255) UNIQUE NOT NULL,
+        user_name VARCHAR(255),
+        google_id VARCHAR(255) UNIQUE,
+        profile_picture TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE TABLE closeness_decoder_schema.friend_urls (
+        friend_url_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL,
+        source_url TEXT NOT NULL,
+        source_key TEXT NOT NULL,
+        expiry_time_minutes INTEGER,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP,
+        is_active BOOLEAN DEFAULT true,
+        click_count BIGINT DEFAULT 0,
+        CONSTRAINT fk_user FOREIGN KEY (user_id) 
+            REFERENCES closeness_decoder_schema.users(id) ON DELETE CASCADE
+    );
+    
+    CREATE INDEX idx_users_email ON closeness_decoder_schema.users(email);
+    CREATE INDEX idx_users_google_id ON closeness_decoder_schema.users(google_id);
+    CREATE INDEX idx_friend_urls_user_id ON closeness_decoder_schema.friend_urls(user_id);
+    CREATE INDEX idx_friend_urls_is_active ON closeness_decoder_schema.friend_urls(is_active);
+    CREATE INDEX idx_friend_urls_expires_at ON closeness_decoder_schema.friend_urls(expires_at);
+    ```
+  </Step>
+  
+  <Step title="Configure Flyway">
+    Add to `application.yaml`:
+    ```yaml
+    spring:
+      flyway:
+        enabled: true
+        schemas: closeness_decoder_schema
+        baseline-on-migrate: true
+    ```
+  </Step>
+</Steps>
+
+### Manual Schema Creation
+
+If not using Flyway, run the SQL scripts manually:
+
+```bash
+psql -h localhost -U closeness_user -d closeness_decoder -f schema.sql
+```
+
+## Performance Optimization
+
+### Indexes
+
+The schema includes indexes for common queries:
+
+```sql
+-- User lookups by email and Google ID
+CREATE INDEX idx_users_email ON closeness_decoder_schema.users(email);
+CREATE INDEX idx_users_google_id ON closeness_decoder_schema.users(google_id);
+
+-- Friend URL queries by user and status
+CREATE INDEX idx_friend_urls_user_id ON closeness_decoder_schema.friend_urls(user_id);
+CREATE INDEX idx_friend_urls_is_active ON closeness_decoder_schema.friend_urls(is_active);
+CREATE INDEX idx_friend_urls_expires_at ON closeness_decoder_schema.friend_urls(expires_at);
+```
+
+### Connection Pooling
+
+The application uses HikariCP (Spring Boot default) for connection pooling:
+
+```yaml application.yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 20000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+```
+
+### Query Optimization Tips
+
+- Use `@Query` annotations for complex queries
+- Enable query logging in development to identify slow queries
+- Use pagination for large result sets
+- Consider materialized views for complex aggregations
+
+## Backup and Recovery
+
+### Automated Backups (Managed Services)
+
+Most managed PostgreSQL services provide automated backups:
+
+- **Render**: Automatic daily backups with 7-day retention
+- **AWS RDS**: Automated backups with point-in-time recovery
+- **Google Cloud SQL**: Automated backups with custom retention
+
+### Manual Backup
+
+```bash
+# Full database backup
+pg_dump -h localhost -U closeness_user -d closeness_decoder > backup.sql
+
+# Compressed backup
+pg_dump -h localhost -U closeness_user -d closeness_decoder | gzip > backup.sql.gz
+
+# Schema-only backup
+pg_dump -h localhost -U closeness_user -d closeness_decoder -s > schema.sql
+```
+
+### Restore from Backup
+
+```bash
+# Restore full database
+psql -h localhost -U closeness_user -d closeness_decoder < backup.sql
+
+# Restore from compressed backup
+gunzip -c backup.sql.gz | psql -h localhost -U closeness_user -d closeness_decoder
+```
+
+## Troubleshooting
+
+<Accordion title="Connection refused">
+  **Symptoms**: Application can't connect to PostgreSQL
+  
+  **Solutions**:
+  - Verify PostgreSQL is running: `pg_isready`
+  - Check `DB_URL` format: `jdbc:postgresql://host:port/database`
+  - Verify firewall/security group rules
+  - Check PostgreSQL `pg_hba.conf` for access permissions
+</Accordion>
+
+<Accordion title="Schema validation failed">
+  **Symptoms**: `hibernate.ddl-auto=validate` fails on startup
+  
+  **Solutions**:
+  - Run Flyway migrations or create schema manually
+  - Verify schema name matches: `closeness_decoder_schema`
+  - Check table and column names match entity definitions
+  - Temporarily set `ddl-auto: update` to see differences (development only)
+</Accordion>
+
+<Accordion title="Too many connections">
+  **Symptoms**: "FATAL: sorry, too many clients already"
+  
+  **Solutions**:
+  - Reduce HikariCP `maximum-pool-size`
+  - Increase PostgreSQL `max_connections` setting
+  - Use connection pooling (PgBouncer) for high-traffic applications
+  - Check for connection leaks in application code
+</Accordion>
+
+<Accordion title="Slow queries">
+  **Symptoms**: High database latency
+  
+  **Solutions**:
+  - Enable query logging: `show-sql: true`
+  - Use `EXPLAIN ANALYZE` to analyze query plans
+  - Add missing indexes
+  - Optimize N+1 query problems with `@EntityGraph` or joins
+  - Consider read replicas for read-heavy workloads
+</Accordion>
+
+## Next Steps
+
+- [Configure Backend Environment Variables](/deployment/environment-variables)
+- [Deploy Backend Application](/deployment/backend-setup)
+- [Monitor database performance](#) (coming soon)

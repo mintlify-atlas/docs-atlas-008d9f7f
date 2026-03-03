@@ -1,0 +1,90 @@
+---
+title: 'Sign Up'
+description: 'Register a new user account using Google OAuth 2.0 credentials'
+---
+
+## POST /api/auth/signup
+
+Creates a new user account using Google OAuth 2.0 authentication. This endpoint accepts a Google credential token and registers the user in the system.
+
+### Request Body
+
+<ParamField body="credential" type="string" required>
+  Google OAuth 2.0 credential token obtained from Google Sign-In
+</ParamField>
+
+<ParamField body="authType" type="string">
+  Authentication type identifier (optional)
+</ParamField>
+
+### Response
+
+Returns an authentication response with a JWT access token and user information.
+
+<ResponseField name="accessToken" type="string">
+  JWT token for authenticating subsequent API requests
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  User information object
+  
+  <Expandable title="properties">
+    <ResponseField name="id" type="string">
+      Unique user identifier
+    </ResponseField>
+    
+    <ResponseField name="email" type="string">
+      User's email address
+    </ResponseField>
+    
+    <ResponseField name="name" type="string">
+      User's display name
+    </ResponseField>
+    
+    <ResponseField name="avatar" type="string">
+      URL to user's profile picture
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example Request
+
+```bash
+curl -X POST https://api.example.com/api/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "credential": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5ZmUyYTdiNjc5NTIzOTYwNmNhMGE3OTA3NjZmMDQ0MmE3MmU0MTYiLCJ0eXAiOiJKV1QifQ..."
+  }'
+```
+
+### Example Response
+
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": "123e4567-e89b-12d3-a456-426614174000",
+    "email": "user@example.com",
+    "name": "John Doe",
+    "avatar": "https://lh3.googleusercontent.com/a/default-user"
+  }
+}
+```
+
+### Status Codes
+
+<ResponseField name="200" type="OK">
+  User successfully registered and authenticated
+</ResponseField>
+
+<ResponseField name="400" type="Bad Request">
+  Invalid or missing credential token
+</ResponseField>
+
+<ResponseField name="409" type="Conflict">
+  User with this email already exists
+</ResponseField>
+
+<ResponseField name="500" type="Internal Server Error">
+  Server error during registration process
+</ResponseField>

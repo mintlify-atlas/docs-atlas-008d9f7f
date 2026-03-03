@@ -1,0 +1,421 @@
+---
+title: Frontend Deployment
+description: Deploy the React frontend to Vercel or other hosting platforms
+---
+
+This guide covers deploying the Closeness Decoder React frontend, primarily focusing on Vercel deployment.
+
+## Prerequisites
+
+Before deploying, ensure you have:
+
+- Node.js 18+ installed
+- npm or yarn package manager
+- Backend API deployed and accessible
+- Google OAuth client ID configured
+- Frontend [environment variables](/deployment/environment-variables) ready
+
+## Technology Stack
+
+The frontend is built with:
+
+- **React 19** - UI framework
+- **Vite 7** - Build tool and dev server
+- **TypeScript** - Type safety
+- **React Router DOM 7** - Client-side routing
+- **Axios** - HTTP client
+- **@react-oauth/google** - Google OAuth integration
+
+## Local Development Build
+
+Test the build locally before deploying:
+
+<Steps>
+  <Step title="Navigate to frontend directory">
+    ```bash
+    cd frontend
+    ```
+  </Step>
+  
+  <Step title="Install dependencies">
+    ```bash
+    npm install
+    ```
+  </Step>
+  
+  <Step title="Create environment file">
+    Create a `.env` file with your configuration:
+    
+    ```bash .env
+    VITE_API_URL=http://localhost:8080
+    VITE_GOOGLE_CLIENT_ID=your_google_client_id
+    ```
+    
+    <Warning>
+      All Vite environment variables must be prefixed with `VITE_` to be accessible in the browser.
+    </Warning>
+  </Step>
+  
+  <Step title="Run development server">
+    ```bash
+    npm run dev
+    ```
+    
+    The app will start on `http://localhost:3000`
+  </Step>
+  
+  <Step title="Test production build">
+    ```bash
+    npm run build
+    npm run preview
+    ```
+    
+    This builds the production bundle and serves it locally.
+  </Step>
+</Steps>
+
+## Deploy to Vercel
+
+Vercel is the recommended platform for deploying Vite/React applications.
+
+### Quick Deploy (Recommended)
+
+<Steps>
+  <Step title="Install Vercel CLI">
+    ```bash
+    npm install -g vercel
+    ```
+  </Step>
+  
+  <Step title="Login to Vercel">
+    ```bash
+    vercel login
+    ```
+  </Step>
+  
+  <Step title="Deploy from frontend directory">
+    ```bash
+    cd frontend
+    vercel
+    ```
+    
+    Follow the prompts:
+    - Set up and deploy? `Y`
+    - Which scope? Select your account/team
+    - Link to existing project? `N` (first time)
+    - Project name? `closeness-decoder-frontend`
+    - In which directory is your code located? `./`
+  </Step>
+  
+  <Step title="Add environment variables">
+    In the Vercel dashboard:
+    
+    1. Go to your project → **Settings** → **Environment Variables**
+    2. Add the following variables:
+    
+    | Name | Value | Environment |
+    |------|-------|-------------|
+    | `VITE_API_URL` | `https://api.closeness-decoder.com` | Production |
+    | `VITE_GOOGLE_CLIENT_ID` | Your Google Client ID | All |
+  </Step>
+  
+  <Step title="Deploy to production">
+    ```bash
+    vercel --prod
+    ```
+    
+    Your site will be live at `https://closeness-decoder-frontend.vercel.app`
+  </Step>
+</Steps>
+
+### Deploy via Git Integration
+
+Automate deployments on every git push.
+
+<Steps>
+  <Step title="Connect repository">
+    1. Go to [vercel.com](https://vercel.com)
+    2. Click **Add New** → **Project**
+    3. Import your Git repository (GitHub, GitLab, or Bitbucket)
+  </Step>
+  
+  <Step title="Configure project">
+    - **Framework Preset**: Vite
+    - **Root Directory**: `frontend`
+    - **Build Command**: `npm run build`
+    - **Output Directory**: `dist`
+    - **Install Command**: `npm install`
+  </Step>
+  
+  <Step title="Add environment variables">
+    Add the same environment variables as in the Quick Deploy method.
+  </Step>
+  
+  <Step title="Deploy">
+    Click **Deploy**. Vercel will:
+    - Build your application
+    - Deploy to a production URL
+    - Automatically deploy future commits to production
+  </Step>
+</Steps>
+
+### Custom Domain Setup
+
+<Steps>
+  <Step title="Add domain in Vercel">
+    1. Go to your project → **Settings** → **Domains**
+    2. Add your custom domain (e.g., `closeness-decoder.com`)
+  </Step>
+  
+  <Step title="Configure DNS">
+    Add these DNS records at your domain provider:
+    
+    **Option 1: A Record (recommended)**
+    ```
+    Type: A
+    Name: @
+    Value: 76.76.21.21
+    ```
+    
+    **Option 2: CNAME Record**
+    ```
+    Type: CNAME
+    Name: @
+    Value: cname.vercel-dns.com
+    ```
+  </Step>
+  
+  <Step title="Verify domain">
+    Vercel will automatically verify and provision SSL certificates.
+  </Step>
+</Steps>
+
+## Vercel Configuration
+
+The project includes a `vercel.json` for SPA routing:
+
+```json vercel.json
+{
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/" }
+  ]
+}
+```
+
+This ensures all routes are handled by React Router.
+
+## Alternative Deployment Options
+
+### Deploy to Netlify
+
+<Steps>
+  <Step title="Install Netlify CLI">
+    ```bash
+    npm install -g netlify-cli
+    ```
+  </Step>
+  
+  <Step title="Build the application">
+    ```bash
+    cd frontend
+    npm run build
+    ```
+  </Step>
+  
+  <Step title="Deploy">
+    ```bash
+    netlify deploy --prod --dir=dist
+    ```
+  </Step>
+  
+  <Step title="Configure redirects">
+    Create `public/_redirects`:
+    ```
+    /*    /index.html   200
+    ```
+  </Step>
+</Steps>
+
+### Deploy to Static Hosting (S3, Cloudflare Pages, etc.)
+
+<Steps>
+  <Step title="Build the application">
+    ```bash
+    npm run build
+    ```
+    
+    The production build will be in the `dist/` directory.
+  </Step>
+  
+  <Step title="Upload to hosting">
+    **AWS S3 + CloudFront:**
+    ```bash
+    aws s3 sync dist/ s3://your-bucket-name --delete
+    aws cloudfront create-invalidation --distribution-id YOUR_DIST_ID --paths "/*"
+    ```
+    
+    **Cloudflare Pages:**
+    - Build command: `npm run build`
+    - Build output directory: `dist`
+  </Step>
+  
+  <Step title="Configure SPA routing">
+    Ensure your hosting platform redirects all routes to `index.html`:
+    
+    - **S3/CloudFront**: Use CloudFront Functions or Lambda@Edge
+    - **Cloudflare Pages**: Automatically handles SPA routing
+  </Step>
+</Steps>
+
+## Environment Variables by Environment
+
+<CodeGroup>
+```bash Development (.env.development)
+VITE_API_URL=http://localhost:8080
+VITE_GOOGLE_CLIENT_ID=your_google_client_id
+```
+
+```bash Staging (.env.staging)
+VITE_API_URL=https://api-staging.closeness-decoder.com
+VITE_GOOGLE_CLIENT_ID=your_google_client_id
+```
+
+```bash Production (.env.production)
+VITE_API_URL=https://api.closeness-decoder.com
+VITE_GOOGLE_CLIENT_ID=your_google_client_id
+```
+</CodeGroup>
+
+## Build Optimization
+
+The Vite configuration is optimized for production:
+
+```typescript vite.config.ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 3000,
+  },
+})
+```
+
+### Additional Optimizations
+
+Consider adding these configurations for better performance:
+
+```typescript vite.config.ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 3000,
+  },
+  build: {
+    // Enable code splitting
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'google-oauth': ['@react-oauth/google'],
+        },
+      },
+    },
+    // Adjust chunk size warning limit
+    chunkSizeWarningLimit: 1000,
+  },
+})
+```
+
+## Production Checklist
+
+Before going live:
+
+- [ ] `VITE_API_URL` points to production backend
+- [ ] `VITE_GOOGLE_CLIENT_ID` matches backend configuration
+- [ ] Custom domain is configured and SSL is active
+- [ ] All routes work correctly (SPA routing configured)
+- [ ] Google OAuth redirect URIs include production domain
+- [ ] Build completes without errors or warnings
+- [ ] Console has no errors in production build
+- [ ] Performance metrics are acceptable (Lighthouse score)
+- [ ] Analytics and monitoring are configured
+
+## Monitoring & Analytics
+
+### Vercel Analytics
+
+Enable Vercel Analytics for performance insights:
+
+1. Install the package:
+   ```bash
+   npm install @vercel/analytics
+   ```
+
+2. Add to your `main.tsx`:
+   ```typescript
+   import { Analytics } from '@vercel/analytics/react'
+   
+   ReactDOM.createRoot(document.getElementById('root')!).render(
+     <React.StrictMode>
+       <App />
+       <Analytics />
+     </React.StrictMode>,
+   )
+   ```
+
+3. View metrics in Vercel dashboard → **Analytics**
+
+## Troubleshooting
+
+<Accordion title="404 errors on page refresh">
+  This means SPA routing is not configured correctly.
+  
+  **Solution**: Ensure `vercel.json` includes the rewrite rule:
+  ```json
+  {
+    "rewrites": [
+      { "source": "/(.*)", "destination": "/" }
+    ]
+  }
+  ```
+</Accordion>
+
+<Accordion title="Environment variables are undefined">
+  Vite only exposes variables prefixed with `VITE_`.
+  
+  **Solution**:
+  - Rename `API_URL` to `VITE_API_URL`
+  - Access in code: `import.meta.env.VITE_API_URL`
+  - Redeploy after adding variables in Vercel dashboard
+</Accordion>
+
+<Accordion title="Google OAuth fails">
+  Check:
+  - `VITE_GOOGLE_CLIENT_ID` matches the backend
+  - Authorized JavaScript origins include your domain
+  - Authorized redirect URIs include your domain
+  
+  Update in [Google Cloud Console](https://console.cloud.google.com/apis/credentials):
+  - Authorized JavaScript origins: `https://closeness-decoder.com`
+  - Authorized redirect URIs: `https://closeness-decoder.com`
+</Accordion>
+
+<Accordion title="CORS errors when calling API">
+  The backend needs to allow your frontend domain.
+  
+  **Solution**: Update backend `CORS_ALLOWED_ORIGINS`:
+  ```
+  CORS_ALLOWED_ORIGINS=https://closeness-decoder.com
+  ```
+</Accordion>
+
+## Next Steps
+
+- [Configure Backend CORS](/deployment/backend-setup)
+- [Set up Google OAuth](/features/authentication)
+- [Monitor application performance](#monitoring--analytics)

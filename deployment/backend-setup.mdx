@@ -1,0 +1,452 @@
+---
+title: Backend Deployment
+description: Deploy the Spring Boot backend to Render, Kubernetes, or other platforms
+---
+
+This guide covers deploying the Closeness Decoder Spring Boot backend to production environments.
+
+## Prerequisites
+
+Before deploying, ensure you have:
+
+- Java 17 or later installed
+- Maven 3.6+ installed
+- PostgreSQL database (v12+)
+- Redis instance with TLS support
+- Backblaze B2 account and bucket
+- Google OAuth credentials
+- All [environment variables](/deployment/environment-variables) configured
+
+## Local Development Build
+
+Test the build locally before deploying:
+
+```bash
+cd backend
+
+# Clean and build
+./mvnw clean package
+
+# Run locally
+java -jar target/Closeness-Decoder-0.0.1-SNAPSHOT.jar
+```
+
+The application will start on port `8080` by default.
+
+## Docker Deployment
+
+The project includes a multi-stage Dockerfile for optimized production builds.
+
+### Build Docker Image
+
+<Steps>
+  <Step title="Navigate to backend directory">
+    ```bash
+    cd backend
+    ```
+  </Step>
+  
+  <Step title="Build the image">
+    ```bash
+    docker build -t closeness-decoder-backend:latest .
+    ```
+    
+    The Dockerfile uses a multi-stage build:
+    - **Build stage**: Uses `eclipse-temurin:17-jdk-jammy` to compile the application
+    - **Runtime stage**: Uses lightweight `eclipse-temurin:17-jre-jammy` for the final image
+  </Step>
+  
+  <Step title="Run the container">
+    ```bash
+    docker run -p 8080:8080 \
+      --env-file .env \
+      closeness-decoder-backend:latest
+    ```
+  </Step>
+</Steps>
+
+### Docker Compose (Optional)
+
+For local testing with all dependencies:
+
+```yaml docker-compose.yml
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - postgres
+      - redis
+  
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: closeness_decoder
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+  
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass redis_password
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
+```
+
+## Deploy to Render
+
+Render provides an easy platform for deploying Spring Boot applications.
+
+<Steps>
+  <Step title="Create a Render account">
+    Sign up at [render.com](https://render.com)
+  </Step>
+  
+  <Step title="Create a new Web Service">
+    1. Click **New** → **Web Service**
+    2. Connect your GitHub/GitLab repository
+    3. Select the repository containing Closeness Decoder
+  </Step>
+  
+  <Step title="Configure the service">
+    - **Name**: `closeness-decoder-backend`
+    - **Environment**: `Docker`
+    - **Branch**: `main` (or your production branch)
+    - **Dockerfile Path**: `backend/Dockerfile`
+    - **Docker Context**: `backend`
+  </Step>
+  
+  <Step title="Add environment variables">
+    In the Render dashboard, go to **Environment** and add all [required environment variables](/deployment/environment-variables).
+    
+    <Warning>
+      Add each variable individually in the Render dashboard. Do not commit `.env` files to the repository.
+    </Warning>
+  </Step>
+  
+  <Step title="Deploy">
+    Click **Create Web Service**. Render will:
+    1. Build your Docker image
+    2. Deploy the container
+    3. Provide a public URL (e.g., `https://closeness-decoder-backend.onrender.com`)
+  </Step>
+</Steps>
+
+### Render Configuration Tips
+
+- **Instance Type**: Start with the free tier or "Starter" ($7/month)
+- **Health Check Path**: Configure `/actuator/health` if you add Spring Boot Actuator
+- **Auto-Deploy**: Enable to automatically deploy on git push
+
+## Deploy to Kubernetes
+
+For production-grade deployments with autoscaling and high availability.
+
+### Prerequisites
+
+- Kubernetes cluster (GKE, EKS, AKS, or self-hosted)
+- `kubectl` configured
+- Docker image pushed to a registry (Docker Hub, GCR, ECR)
+
+### Push Image to Registry
+
+<CodeGroup>
+```bash Docker Hub
+docker tag closeness-decoder-backend:latest username/closeness-decoder-backend:latest
+docker push username/closeness-decoder-backend:latest
+```
+
+```bash Google Container Registry
+docker tag closeness-decoder-backend:latest gcr.io/project-id/closeness-decoder-backend:latest
+docker push gcr.io/project-id/closeness-decoder-backend:latest
+```
+
+```bash AWS ECR
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 123456789.dkr.ecr.us-east-1.amazonaws.com
+docker tag closeness-decoder-backend:latest 123456789.dkr.ecr.us-east-1.amazonaws.com/closeness-decoder-backend:latest
+docker push 123456789.dkr.ecr.us-east-1.amazonaws.com/closeness-decoder-backend:latest
+```
+</CodeGroup>
+
+### Kubernetes Manifests
+
+<Accordion title="deployment.yaml">
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: closeness-decoder-backend
+  labels:
+    app: closeness-decoder-backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: closeness-decoder-backend
+  template:
+    metadata:
+      labels:
+        app: closeness-decoder-backend
+    spec:
+      containers:
+      - name: backend
+        image: username/closeness-decoder-backend:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: db-url
+        - name: DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: db-username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: db-password
+        - name: REDIS_HOST
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: redis-host
+        - name: REDIS_PORT
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: redis-port
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: redis-password
+        - name: B2_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: b2-endpoint
+        - name: B2_REGION
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: b2-region
+        - name: B2_BUCKET
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: b2-bucket
+        - name: B2_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: b2-access-key
+        - name: B2_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: b2-secret-key
+        - name: GOOGLE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: google-client-id
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: jwt-secret
+        - name: JWT_EXPIRATION_MS
+          value: "86400000"
+        - name: API_URL
+          value: "https://api.closeness-decoder.com"
+        - name: BASE_URL
+          value: "https://closeness-decoder.com"
+        - name: CORS_ALLOWED_ORIGINS
+          value: "https://closeness-decoder.com"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+```
+</Accordion>
+
+<Accordion title="service.yaml">
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: closeness-decoder-backend
+spec:
+  selector:
+    app: closeness-decoder-backend
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: LoadBalancer
+```
+</Accordion>
+
+<Accordion title="secrets.yaml">
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secrets
+type: Opaque
+stringData:
+  db-url: jdbc:postgresql://your-db-host:5432/closeness_decoder
+  db-username: postgres
+  db-password: your_password
+  redis-host: your-redis-host
+  redis-port: "6380"
+  redis-password: your_redis_password
+  b2-endpoint: https://s3.us-west-001.backblazeb2.com
+  b2-region: us-west-001
+  b2-bucket: your-bucket
+  b2-access-key: your_access_key
+  b2-secret-key: your_secret_key
+  google-client-id: your_google_client_id
+  jwt-secret: your_jwt_secret
+```
+
+<Warning>
+  **Never commit this file to version control!** Use `kubectl create secret` or a secret management solution like Sealed Secrets or External Secrets Operator.
+</Warning>
+</Accordion>
+
+### Deploy to Kubernetes
+
+<Steps>
+  <Step title="Create secrets">
+    ```bash
+    kubectl create secret generic backend-secrets \
+      --from-literal=db-url="jdbc:postgresql://..." \
+      --from-literal=db-username="postgres" \
+      --from-literal=db-password="..." \
+      # ... add all other secrets
+    ```
+  </Step>
+  
+  <Step title="Apply manifests">
+    ```bash
+    kubectl apply -f deployment.yaml
+    kubectl apply -f service.yaml
+    ```
+  </Step>
+  
+  <Step title="Verify deployment">
+    ```bash
+    kubectl get pods
+    kubectl get services
+    kubectl logs -f deployment/closeness-decoder-backend
+    ```
+  </Step>
+  
+  <Step title="Get external IP">
+    ```bash
+    kubectl get service closeness-decoder-backend
+    ```
+    
+    Use the `EXTERNAL-IP` to access your backend.
+  </Step>
+</Steps>
+
+## Production Checklist
+
+Before going live, verify:
+
+- [ ] All environment variables are set correctly
+- [ ] Database migrations have run successfully
+- [ ] PostgreSQL connection pooling is configured
+- [ ] Redis connection is using TLS (`rediss://`)
+- [ ] CORS origins are explicitly set (no wildcards)
+- [ ] JWT secret is strong and unique
+- [ ] Backblaze B2 bucket permissions are configured
+- [ ] Health check endpoint is responding
+- [ ] Logging is configured for production
+- [ ] HTTPS/TLS certificates are valid
+- [ ] Monitoring and alerting are set up
+
+## Troubleshooting
+
+<Accordion title="Application fails to start">
+  Check the logs for configuration errors:
+  
+  ```bash
+  # Docker
+  docker logs <container-id>
+  
+  # Kubernetes
+  kubectl logs -f deployment/closeness-decoder-backend
+  ```
+  
+  Common issues:
+  - Missing environment variables
+  - Invalid database credentials
+  - Database schema not initialized
+  - Redis connection timeout
+</Accordion>
+
+<Accordion title="Database connection fails">
+  Verify:
+  - `DB_URL` format is correct: `jdbc:postgresql://host:port/database`
+  - Database is accessible from the deployment environment
+  - Firewall/security groups allow connections
+  - Credentials are correct
+  
+  Test connection:
+  ```bash
+  psql "jdbc:postgresql://host:port/database" -U username
+  ```
+</Accordion>
+
+<Accordion title="Redis connection timeout">
+  The application uses `rediss://` (TLS). Ensure:
+  - Redis instance supports TLS on the configured port
+  - `REDIS_PORT` is correct (usually `6380` for TLS)
+  - Network allows outbound connections to Redis
+</Accordion>
+
+<Accordion title="CORS errors in frontend">
+  Update `CORS_ALLOWED_ORIGINS` to include your frontend domain:
+  ```
+  CORS_ALLOWED_ORIGINS=https://your-frontend-domain.com
+  ```
+</Accordion>
+
+## Next Steps
+
+- [Configure the Database](/deployment/database)
+- [Deploy the Frontend](/deployment/frontend-setup)
+- [Set up monitoring and logging](#) (coming soon)

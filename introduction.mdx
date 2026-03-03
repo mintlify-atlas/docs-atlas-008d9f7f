@@ -1,0 +1,114 @@
+---
+title: Introduction
+description: Secure file sharing with time-limited presigned URLs powered by S3-compatible storage
+---
+
+# Welcome to Closeness Decoder
+
+Closeness Decoder is a secure file sharing platform that makes it easy to share files with friends and colleagues using time-limited, auto-expiring links. Built with security and simplicity in mind, it leverages modern cloud technologies to provide a seamless sharing experience.
+
+## What is Closeness Decoder?
+
+Closeness Decoder allows you to:
+
+- Upload PDF files securely to S3-compatible storage (Backblaze B2)
+- Generate shareable links that automatically expire after 60 minutes
+- Track who views your shared files with real-time analytics
+- Authenticate securely using Google OAuth 2.0
+
+All shared files are protected with presigned URLs that expire automatically, ensuring your content doesn't remain accessible indefinitely.
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get started with your first file share in under 5 minutes
+  </Card>
+  <Card
+    title="Authentication"
+    icon="lock"
+    href="/features/authentication"
+  >
+    Learn how Google OAuth 2.0 and JWT tokens work in Closeness
+  </Card>
+  <Card
+    title="File Sharing"
+    icon="file-arrow-up"
+    href="/features/file-sharing"
+  >
+    Deep dive into file uploads and presigned URL generation
+  </Card>
+  <Card
+    title="API Reference"
+    icon="code"
+    href="/api/auth/signup"
+  >
+    Complete API documentation for all endpoints
+  </Card>
+</CardGroup>
+
+## Key Features
+
+### Secure Authentication
+
+Authenticate users with Google OAuth 2.0 and issue JWT tokens for secure API access. Tokens are automatically validated on each request.
+
+### Time-Limited Sharing
+
+All shared files use presigned URLs that expire after 60 minutes. No manual cleanup required—links become invalid automatically.
+
+### Real-Time Analytics
+
+Track file views in real-time using Kafka event streaming. Know exactly when someone accesses your shared files.
+
+### S3-Compatible Storage
+
+Files are stored securely in Backblaze B2 (S3-compatible) with automatic lifecycle management and cleanup.
+
+### Rate Limiting
+
+Built-in rate limiting protects against abuse with configurable request limits per endpoint.
+
+## Architecture
+
+Closeness Decoder is built with modern, scalable technologies:
+
+- **Backend**: Spring Boot with PostgreSQL for persistent storage
+- **Frontend**: React with TypeScript for a responsive UI
+- **Storage**: Backblaze B2 (S3-compatible) for secure file storage
+- **Cache**: Redis for fast URL lookups
+- **Streaming**: Kafka for real-time event processing
+- **Authentication**: Google OAuth 2.0 with JWT tokens
+
+## Core Workflow
+
+<Steps>
+  <Step title="User authenticates">
+    User signs in with Google OAuth 2.0 and receives a JWT token
+  </Step>
+  <Step title="User uploads file">
+    PDF file is uploaded to Backblaze B2 storage with a unique key
+  </Step>
+  <Step title="System generates presigned URL">
+    A 60-minute presigned URL is created and mapped to a unique friend code
+  </Step>
+  <Step title="User shares friend code link">
+    User shares the friend code URL (e.g., `/friend-url/{friendCode}`) with others
+  </Step>
+  <Step title="Recipient accesses file">
+    When accessed, the system returns the presigned URL and tracks the view event
+  </Step>
+  <Step title="Link expires automatically">
+    After 60 minutes, the link becomes invalid and files are cleaned up
+  </Step>
+</Steps>
+
+<Note>
+  All file uploads are currently limited to PDF format with a maximum size of 10MB. Support for additional file types is on the roadmap.
+</Note>
+
+## Get Started
+
+Ready to start sharing files securely? Check out the [Quickstart guide](/quickstart) to create your first share link in minutes.

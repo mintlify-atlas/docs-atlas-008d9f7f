@@ -1,0 +1,81 @@
+---
+title: "Upload File"
+description: "Upload a PDF file to S3-compatible storage"
+---
+
+## POST /api/upload
+
+Uploads a PDF file to S3-compatible storage (Backblaze B2). The file is stored with a unique key based on the current date and a UUID.
+
+### Authentication
+
+Requires JWT authentication. Include the JWT token in the `Authorization` header:
+
+```
+Authorization: Bearer <token>
+```
+
+### Request
+
+<ParamField body="file" type="file" required>
+  The PDF file to upload. Must be a valid PDF file (Content-Type: application/pdf).
+</ParamField>
+
+<Warning>
+  File size must not exceed 10MB. Only PDF files are accepted.
+</Warning>
+
+### Response
+
+<ResponseField name="message" type="string">
+  Success message indicating the file was saved successfully
+</ResponseField>
+
+### Example Request
+
+```bash cURL
+curl -X POST https://api.closeness-decoder.com/api/upload \
+  -H "Authorization: Bearer <your_jwt_token>" \
+  -F "file=@/path/to/document.pdf"
+```
+
+### Response Examples
+
+<Expandable title="200 OK - Success">
+  ```json
+  "Saved successfully"
+  ```
+</Expandable>
+
+<Expandable title="400 Bad Request - Empty File">
+  ```json
+  "file is not present"
+  ```
+</Expandable>
+
+<Expandable title="400 Bad Request - Invalid File Type">
+  ```json
+  "only pdf file format is supported"
+  ```
+</Expandable>
+
+<Expandable title="401 Unauthorized">
+  Returned when JWT token is missing or invalid.
+</Expandable>
+
+<Expandable title="500 Internal Server Error">
+  ```json
+  "Error message describing what went wrong"
+  ```
+</Expandable>
+
+### Implementation Details
+
+- Files are stored with keys in the format: `YYYY-MM-DD/<uuid>.pdf`
+- The endpoint validates file presence and content type before processing
+- Uses AWS SDK for S3-compatible storage operations
+
+### Source Code
+
+- Controller: `controller/S3Controller.java:32`
+- Service implementation: `service/impl/S3ServiceImpl.java:55`

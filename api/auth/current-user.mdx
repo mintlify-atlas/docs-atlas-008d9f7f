@@ -1,0 +1,72 @@
+---
+title: 'Get Current User'
+description: 'Retrieve the authenticated user information'
+---
+
+## GET /api/auth/me
+
+Returns the profile information for the currently authenticated user. This endpoint requires a valid JWT token in the Authorization header.
+
+### Authentication
+
+This endpoint requires authentication. Include the JWT access token in the Authorization header:
+
+```
+Authorization: Bearer <access_token>
+```
+
+### Response
+
+Returns the user information object for the authenticated user.
+
+<ResponseField name="id" type="string">
+  Unique user identifier
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  User's email address
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  User's display name
+</ResponseField>
+
+<ResponseField name="avatar" type="string">
+  URL to user's profile picture
+</ResponseField>
+
+### Example Request
+
+```bash
+curl -X GET https://api.example.com/api/auth/me \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Example Response
+
+```json
+{
+  "id": "123e4567-e89b-12d3-a456-426614174000",
+  "email": "user@example.com",
+  "name": "John Doe",
+  "avatar": "https://lh3.googleusercontent.com/a/default-user"
+}
+```
+
+### Status Codes
+
+<ResponseField name="200" type="OK">
+  User information successfully retrieved
+</ResponseField>
+
+<ResponseField name="401" type="Unauthorized">
+  Missing or invalid authentication token
+</ResponseField>
+
+<ResponseField name="403" type="Forbidden">
+  Token expired or user session invalid
+</ResponseField>
+
+<ResponseField name="500" type="Internal Server Error">
+  Server error during user retrieval
+</ResponseField>

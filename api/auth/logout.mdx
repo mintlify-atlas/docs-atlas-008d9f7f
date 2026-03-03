@@ -1,0 +1,51 @@
+---
+title: 'Logout'
+description: 'End the current user session'
+---
+
+## POST /api/auth/logout
+
+Terminates the current user session by clearing the security context. After logout, the current JWT token should be discarded by the client.
+
+### Authentication
+
+This endpoint requires authentication. Include the JWT access token in the Authorization header:
+
+```
+Authorization: Bearer <access_token>
+```
+
+### Response
+
+Returns an empty response with a 200 status code on successful logout.
+
+### Example Request
+
+```bash
+curl -X POST https://api.example.com/api/auth/logout \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Example Response
+
+No response body. Returns HTTP 200 OK on success.
+
+### Status Codes
+
+<ResponseField name="200" type="OK">
+  User successfully logged out
+</ResponseField>
+
+<ResponseField name="401" type="Unauthorized">
+  Missing or invalid authentication token
+</ResponseField>
+
+<ResponseField name="500" type="Internal Server Error">
+  Server error during logout process
+</ResponseField>
+
+### Notes
+
+- After logout, the client should remove the stored JWT token
+- The token will remain valid until expiration, but the server-side session is cleared
+- Subsequent requests with the same token may fail depending on server configuration

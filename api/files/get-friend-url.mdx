@@ -1,0 +1,106 @@
+---
+title: "Get Friend URL"
+description: "Retrieve the presigned URL for a file using a friend code"
+---
+
+## GET /api/friend-url/{friendCode}
+
+Retrieves the presigned URL for a previously uploaded file using its friend code. This endpoint allows users to access shared files without authentication.
+
+### Authentication
+
+**No authentication required.** This is a public endpoint that can be accessed by anyone with a valid friend code.
+
+### Rate Limiting
+
+<Warning>
+  This endpoint is rate limited to **100 requests per 60 seconds** per client.
+</Warning>
+
+### Path Parameters
+
+<ParamField path="friendCode" type="UUID" required>
+  The unique friend code returned when the file was uploaded via `POST /api/friend-url/upload`.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  Status of the request. Can be "Success" or "Failed".
+</ResponseField>
+
+<ResponseField name="friendUrl" type="string" nullable>
+  The presigned URL to access the file. Only present when status is "Success". Returns `null` when status is "Failed".
+</ResponseField>
+
+### Example Request
+
+```bash cURL
+curl -X GET https://api.closeness-decoder.com/api/friend-url/550e8400-e29b-41d4-a716-446655440000
+```
+
+### Response Examples
+
+<Expandable title="200 OK - Success (from cache)">
+  ```json
+  {
+    "status": "Success",
+    "friendUrl": "https://s3.us-west-000.backblazeb2.com/bucket-name/2026-03-03/uuid.pdf?X-Amz-Algorithm=..."
+  }
+  ```
+  
+  The presigned URL can be used directly to download the file. It expires after 45 minutes from generation.
+</Expandable>
+
+<Expandable title="200 OK - Success (from database)">
+  ```json
+  {
+    "status": "Success",
+    "friendUrl": "https://s3.us-west-000.backblazeb2.com/bucket-name/2026-03-03/uuid.pdf?X-Amz-Algorithm=..."
+  }
+  ```
+  
+  If not found in Redis cache, the URL is retrieved from the PostgreSQL database.
+</Expandable>
+
+<Expandable title="202 Accepted - Friend Code Not Found or Expired">
+  ```json
+  {
+    "status": "Failed",
+    "friendUrl": null
+  }
+  ```
+  
+  Returned when:
+  - The friend code doesn't exist
+  - The friend URL has expired (>60 minutes old)
+  - The friend URL has been deactivated
+</Expandable>
+
+<Expandable title="429 Too Many Requests">
+  Returned when the rate limit of 100 requests per 60 seconds is exceeded.
+</Expandable>
+
+### Implementation Details
+
+- First checks Redis cache for fast retrieval
+- Falls back to PostgreSQL database if not found in cache
+- Only returns active friend URLs that haven't expired
+- Click events are published to Kafka for analytics tracking
+- The presigned URL in the response expires 45 minutes after generation
+- Friend codes expire 60 minutes after creation
+
+### Response Flow
+
+1. Request received with friend code
+2. Check Redis cache for friend code
+3. If found in cache: return presigned URL and publish click event
+4. If not in cache: query PostgreSQL database
+5. If found and active: return presigned URL and publish click event
+6. If not found or inactive: return failure response
+
+### Source Code
+
+- Controller: `controller/S3Controller.java:50`
+- Service implementation: `service/impl/S3ServiceImpl.java:135`
+- Rate limiter annotation: `annotation/RateLimiter.java` (100 requests/60 seconds)

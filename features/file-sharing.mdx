@@ -1,0 +1,408 @@
+---
+title: "File Sharing"
+description: "Secure PDF upload and sharing workflow with S3-compatible storage and unique friend URLs"
+---
+
+Closeness Decoder provides a streamlined file sharing system that allows users to upload PDF files and generate secure, time-limited sharing links. Files are stored in S3-compatible storage (Backblaze B2) with automatic expiry management.
+
+## Overview
+
+The file sharing system consists of:
+
+1. **PDF Upload** - Uploads files to S3-compatible storage
+2. **Friend URL Generation** - Creates unique sharing codes with presigned URLs
+3. **Link Retrieval** - Allows recipients to access files via friend code
+4. **Automatic Expiry** - Files expire after configured time period
+
+## File Upload Process
+
+<Steps>
+  <Step title="User selects PDF file">
+    Frontend displays file picker restricted to PDF files only
+  </Step>
+  <Step title="File validation">
+    Backend validates file type and size constraints
+  </Step>
+  <Step title="Upload to S3">
+    File is uploaded to Backblaze B2 with unique key
+  </Step>
+  <Step title="Presigned URL generation">
+    System generates time-limited presigned URL for file access
+  </Step>
+  <Step title="Friend URL creation">
+    Unique friend code is generated and stored with URL mapping
+  </Step>
+  <Step title="Caching">
+    Friend URL mapping is cached in Redis for fast retrieval
+  </Step>
+</Steps>
+
+## Supported File Types
+
+Currently, only PDF files are supported:
+
+```java S3Controller.java
+@PostMapping(path = "/upload")
+public ResponseEntity<?> sendObjectToS3CompatibleStorage(
+        @RequestParam("file") MultipartFile file) {
+    if (file.isEmpty()) {
+        return new ResponseEntity<>("file is not present", HttpStatus.BAD_REQUEST);
+    } else if (!file.getContentType().equalsIgnoreCase("application/pdf")) {
+        return new ResponseEntity<>("only pdf file format is supported", HttpStatus.BAD_REQUEST);
+    }
+    return s3Service.sendObject(file);
+}
+```
+
+<Note>
+  The system validates that uploaded files have the MIME type `application/pdf`. Other file types are rejected with a 400 Bad Request response.
+</Note>
+
+## S3 Storage Configuration
+
+Closeness Decoder uses Backblaze B2, an S3-compatible storage service:
+
+```yaml application.yaml
+back-blaze:
+  s3:
+    endpoint: ${B2_ENDPOINT}
+    region: ${B2_REGION}
+    bucket: ${B2_BUCKET}
+    access-key: ${B2_ACCESS_KEY}
+    secret-key: ${B2_SECRET_KEY}
+```
+
+### File Key Generation
+
+Files are stored with organized keys that include the date and UUID:
+
+```java S3ServiceImpl.java
+public String createS3FileKey(MultipartFile file) {
+    String originalFilename = file.getOriginalFilename();
+    String extension = ".pdf"; // default
+    if (originalFilename != null && originalFilename.contains(".")) {
+        extension = originalFilename.substring(originalFilename.lastIndexOf("."));
+    }
+    return LocalDate.now() + "/" + UUID.randomUUID() + extension;
+}
+```
+
+Example key: `2026-03-03/a1b2c3d4-e5f6-7890-abcd-ef1234567890.pdf`
+
+## Upload Implementation
+
+The upload process uses the AWS S3 SDK for Java:
+
+```java S3ServiceImpl.java
+public void uploadObject(MultipartFile file, String key) throws Exception {
+    PutObjectRequest request =
+            PutObjectRequest.builder()
+                    .bucket(s3Properties.getBucketName())
+                    .key(key)
+                    .contentType(file.getContentType())
+                    .build();
+    s3Client.putObject(request,
+            RequestBody.fromInputStream(
+                    file.getInputStream(), file.getSize()));
+}
+```
+
+<Info>
+  The maximum file size is configured in Spring Boot to 10MB via `spring.servlet.multipart.max-file-size`.
+</Info>
+
+## Friend URL System
+
+The friend URL system provides shareable links without exposing the actual S3 URLs:
+
+### Creating a Friend URL
+
+When a user uploads a file for sharing, the system:
+
+1. Uploads the file to S3
+2. Generates a presigned URL (valid for 60 minutes)
+3. Creates a database record with a unique friend code
+4. Caches the mapping in Redis
+5. Publishes upload event to Kafka for analytics
+
+```java S3ServiceImpl.java
+@Override
+public ResponseEntity<?> sendObjectAndGeneratePresignedUrl(MultipartFile file) {
+    // Validate file
+    if (file.isEmpty()) {
+        return new ResponseEntity<>("File is not present", HttpStatus.BAD_REQUEST);
+    }
+    if (!"application/pdf".equalsIgnoreCase(file.getContentType())) {
+        return new ResponseEntity<>("Only PDF file format is supported", HttpStatus.BAD_REQUEST);
+    }
+
+    String key = createS3FileKey(file);
+    ResponseEntity<?> response;
+    try {
+        uploadObject(file, key);
+        log.info("File uploaded to S3");
+        response = getPreSignedUrl(key);
+        LocalDateTime now = LocalDateTime.now();
+        long createdAt = System.currentTimeMillis();
+        long expiresAt = createdAt + (1 * 60 * 1000L);
+        log.info("Presigned url generated");
+        String sourceUrl = response.getBody().toString();
+        UUID userId = authUtils.getCurrentUserId();
+        FriendUrl friendUrl =
+                FriendUrl.builder()
+                        .userId(userId)
+                        .sourceUrl(sourceUrl)
+                        .sourceKey(key)
+                        .expiryTimeMinutes(60)
+                        .createdAt(now)
+                        .expiresAt(now.plusMinutes(60))
+                        .isActive(true)
+                        .build();
+        friendUrl = friendUrlRepository.save(friendUrl);
+        UUID friendCode = friendUrl.getId();
+        redisCacheService.
+                createFriendUrl(String.valueOf(friendCode), sourceUrl);
+        kafkaProducer.
+                publishUploadEvent(
+                        String.valueOf(friendCode), key, createdAt, expiresAt);
+        FriendLinkDto friendLinkDto = new FriendLinkDto(friendCode);
+        return new ResponseEntity<>(friendLinkDto, HttpStatus.OK);
+    } catch (Exception e) {
+        e.printStackTrace();
+        log.error(e.getMessage());
+        return new ResponseEntity<>(e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+}
+```
+
+### Friend URL Data Model
+
+Each friend URL record contains:
+
+- **id (friendCode)**: UUID used as the sharing code
+- **userId**: ID of the user who uploaded the file
+- **sourceUrl**: Presigned S3 URL for file access
+- **sourceKey**: S3 object key
+- **expiryTimeMinutes**: Time until expiration (default 60 minutes)
+- **createdAt**: Timestamp when URL was created
+- **expiresAt**: Timestamp when URL expires
+- **isActive**: Boolean flag for manual deactivation
+
+## Retrieving Shared Files
+
+Recipients can access shared files using the friend code:
+
+```java S3ServiceImpl.java
+@Override
+public ResponseEntity<FriendMessageDto> getFriendUrl(UUID friendCode) {
+    long clickedAt = LocalDateTime.now()
+            .toInstant(ZoneOffset.UTC)
+            .toEpochMilli();
+    String sourceUrlFromCache
+            = redisCacheService.getFriendUrlFromCache(String.valueOf(friendCode));
+    if (sourceUrlFromCache != null) {
+        kafkaProducer.
+                publishClickEvent(String.valueOf(friendCode), clickedAt);
+        FriendMessageDto friendMessageDto =
+                new FriendMessageDto("Success", sourceUrlFromCache);
+        return new ResponseEntity<FriendMessageDto>(friendMessageDto, HttpStatus.OK);
+    }
+    Optional<FriendUrl> friendUrl = friendUrlRepository.findById(friendCode);
+    if (friendUrl.isEmpty() || !friendUrl.get().getIsActive()) {
+        FriendMessageDto friendMessageDto =
+                new FriendMessageDto("Failed", null);
+        return new ResponseEntity<>(friendMessageDto, HttpStatus.ACCEPTED);
+    }
+    kafkaProducer.
+            publishClickEvent(String.valueOf(friendCode), clickedAt);
+    FriendMessageDto friendMessageDto =
+            new FriendMessageDto("Success", friendUrl.get().getSourceUrl());
+    return new ResponseEntity<FriendMessageDto>(friendMessageDto, HttpStatus.OK);
+}
+```
+
+<Note>
+  The system first checks Redis cache for the friend URL. If not found in cache, it queries the database. This two-tier approach optimizes performance for recently created links.
+</Note>
+
+## Redis Caching
+
+Friend URL mappings are cached in Redis for fast retrieval:
+
+```java RedisCacheService.java
+public void createFriendUrl(String key, String value) {
+    log.info("creating cache for friend code with source url");
+    redisTemplate.opsForValue().set(key, value, Duration.ofMinutes(60));
+}
+
+public String getFriendUrlFromCache(String key) {
+    log.info("fetching cached friend url");
+    return redisTemplate.opsForValue().get(key);
+}
+```
+
+Cached entries automatically expire after 60 minutes, matching the presigned URL expiration.
+
+## API Endpoints
+
+### POST /api/upload
+
+Upload a PDF file to S3 storage (without generating friend URL).
+
+**Request:**
+```
+Content-Type: multipart/form-data
+Authorization: Bearer jwt_token
+
+file: [PDF file]
+```
+
+**Response:**
+```json
+"Saved successfully"
+```
+
+### POST /api/friend-url/upload
+
+Upload a PDF file and generate a shareable friend URL.
+
+**Request:**
+```
+Content-Type: multipart/form-data
+Authorization: Bearer jwt_token
+
+file: [PDF file]
+```
+
+**Response:**
+```json
+{
+  "friendCode": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+### GET /api/friend-url/{friendCode}
+
+Retrieve the presigned URL for a shared file. This endpoint is public (no authentication required) but rate-limited.
+
+**Response (Success):**
+```json
+{
+  "message": "Success",
+  "sourceUrl": "https://s3.backblazeb2.com/...presigned-url..."
+}
+```
+
+**Response (Expired/Invalid):**
+```json
+{
+  "message": "Failed",
+  "sourceUrl": null
+}
+```
+
+<Warning>
+  This endpoint is rate-limited to 100 requests per 60 seconds per IP address. See the [Rate Limiting](/features/rate-limiting) documentation for details.
+</Warning>
+
+### GET /api/presigned-url/{key}
+
+Generate a presigned URL for an existing S3 object key. Requires authentication.
+
+**Response:**
+```
+https://s3.backblazeb2.com/...presigned-url...
+```
+
+## File Deletion
+
+The system provides a method to delete files from S3:
+
+```java S3ServiceImpl.java
+@Override
+public void deleteObject(String key) {
+    s3Client.deleteObject(DeleteObjectRequest.builder()
+            .bucket(s3Properties.getBucketName())
+            .key(key)
+            .build());
+}
+```
+
+<Info>
+  Automatic cleanup of expired files can be implemented using scheduled jobs that query for expired `FriendUrl` records and delete the corresponding S3 objects.
+</Info>
+
+## Analytics with Kafka
+
+The system publishes events to Kafka for analytics:
+
+- **Upload Events**: Published when a friend URL is created
+- **Click Events**: Published when someone accesses a friend URL
+
+```java S3ServiceImpl.java
+kafkaProducer.publishUploadEvent(
+        String.valueOf(friendCode), key, createdAt, expiresAt);
+
+kafkaProducer.publishClickEvent(
+        String.valueOf(friendCode), clickedAt);
+```
+
+These events can be consumed by analytics services to track:
+- Upload patterns
+- Link access patterns
+- Popular sharing times
+- Link expiration effectiveness
+
+## Configuration
+
+Required environment variables:
+
+```yaml
+back-blaze:
+  s3:
+    endpoint: ${B2_ENDPOINT}           # e.g., s3.us-west-000.backblazeb2.com
+    region: ${B2_REGION}               # e.g., us-west-000
+    bucket: ${B2_BUCKET}               # Your bucket name
+    access-key: ${B2_ACCESS_KEY}       # Backblaze B2 application key ID
+    secret-key: ${B2_SECRET_KEY}       # Backblaze B2 application key
+
+spring:
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+  data:
+    redis:
+      url: rediss://default:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="File Validation" icon="file-circle-check">
+    Always validate file types and sizes on both frontend and backend
+  </Card>
+  <Card title="Expiration Times" icon="clock">
+    Use appropriate expiration times based on your use case (current: 60 minutes)
+  </Card>
+  <Card title="Storage Costs" icon="dollar-sign">
+    Implement cleanup jobs to delete expired files and reduce storage costs
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation">
+    Provide clear error messages when uploads fail or links expire
+  </Card>
+</CardGroup>
+
+## Security Considerations
+
+<Warning>
+  **Public Access**: Friend URLs are publicly accessible without authentication. Ensure sensitive documents are not shared this way, or implement additional security measures.
+</Warning>
+
+<Note>
+  **Time-Limited Access**: Presigned URLs expire after 60 minutes, limiting the window of exposure for shared files.
+</Note>
+
+<Info>
+  **S3 Bucket Permissions**: Configure your Backblaze B2 bucket to prevent public listing while allowing presigned URL access.
+</Info>

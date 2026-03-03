@@ -1,0 +1,600 @@
+---
+title: 'Storage Architecture'
+description: 'S3-compatible object storage with Backblaze B2, presigned URLs, and automated cleanup'
+---
+
+## Overview
+
+Closeness Decoder uses Backblaze B2 for S3-compatible object storage, leveraging the AWS SDK for Java to handle file uploads, presigned URL generation, and automated cleanup.
+
+## Why Backblaze B2?
+
+<CardGroup cols={2}>
+  <Card title="S3-Compatible API" icon="plug">
+    Full compatibility with AWS S3 SDK, making migration seamless if needed.
+  </Card>
+  <Card title="Cost-Effective" icon="dollar-sign">
+    Significantly lower storage and egress costs compared to AWS S3.
+  </Card>
+  <Card title="No Egress Fees" icon="network-wired">
+    First 3x storage amount of bandwidth is free each month.
+  </Card>
+  <Card title="Global CDN" icon="globe">
+    Optional Cloudflare integration for faster global delivery.
+  </Card>
+</CardGroup>
+
+## Storage Configuration
+
+### Application Configuration
+
+**Location**: `backend/src/main/resources/application.yaml`
+
+```yaml
+back-blaze:
+  s3:
+    endpoint: ${B2_ENDPOINT}
+    region: ${B2_REGION}
+    bucket: ${B2_BUCKET}
+    access-key: ${B2_ACCESS_KEY}
+    secret-key: ${B2_SECRET_KEY}
+```
+
+**Environment Variables**:
+- `B2_ENDPOINT` - Backblaze B2 S3-compatible endpoint (e.g., `https://s3.us-west-002.backblazeb2.com`)
+- `B2_REGION` - Region identifier (e.g., `us-west-002`)
+- `B2_BUCKET` - Bucket name
+- `B2_ACCESS_KEY` - Application key ID (from Backblaze console)
+- `B2_SECRET_KEY` - Application key (from Backblaze console)
+
+### S3Properties
+
+**Location**: `org/closeness/decoder/configuration/S3Properties.java`
+
+Spring Boot configuration properties binding.
+
+```java
+@ConfigurationProperties(prefix = "back-blaze.s3")
+public class S3Properties {
+    private String endpoint;
+    private String region;
+    private String bucketName;  // Maps to 'bucket' in YAML
+    private String accessKey;
+    private String secretKey;
+    
+    // Getters and setters
+}
+```
+
+### S3Config
+
+**Location**: `org/closeness/decoder/configuration/S3Config.java`
+
+Configures AWS SDK clients for Backblaze B2 compatibility.
+
+#### S3Client Bean
+
+```java
+@Bean
+public S3Client s3Client() {
+    log.info("S3 client created with endpoint={}, region={}",
+            props.getEndpoint(), props.getRegion());
+
+    AwsBasicCredentials credentials =
+            AwsBasicCredentials.create(props.getAccessKey(), props.getSecretKey());
+    AwsCredentialsProvider credentialsProvider =
+            StaticCredentialsProvider.create(credentials);
+
+    return S3Client.builder()
+            .endpointOverride(URI.create(props.getEndpoint()))  // Backblaze endpoint
+            .region(Region.of(props.getRegion()))
+            .credentialsProvider(credentialsProvider)
+            .serviceConfiguration(S3Configuration.builder()
+                    .pathStyleAccessEnabled(false)  // Virtual-hosted style URLs
+                    .build())
+            .build();
+}
+```
+
+**Key Configuration** (S3Config.java:37-45):
+- **Endpoint Override**: Points to Backblaze B2 instead of AWS
+- **Virtual-Hosted Style**: Uses `bucket-name.endpoint.com` format
+- **Static Credentials**: Application key credentials from Backblaze
+
+#### S3Presigner Bean
+
+```java
+@Bean
+public S3Presigner s3Presigner() {
+    AwsBasicCredentials credentials =
+            AwsBasicCredentials.create(props.getAccessKey(), props.getSecretKey());
+    AwsCredentialsProvider credentialsProvider =
+            StaticCredentialsProvider.create(credentials);
+
+    return S3Presigner.builder()
+            .endpointOverride(URI.create(props.getEndpoint()))
+            .region(Region.of(props.getRegion()))
+            .credentialsProvider(credentialsProvider)
+            .serviceConfiguration(S3Configuration.builder()
+                    .pathStyleAccessEnabled(false)
+                    .build())
+            .build();
+}
+```
+
+**Purpose** (S3Config.java:48-64):
+- Generates presigned URLs for temporary file access
+- Separate bean from `S3Client` for better separation of concerns
+
+<Info>
+Both `S3Client` and `S3Presigner` use identical configuration but serve different purposes.
+</Info>
+
+## AWS SDK Dependency
+
+**pom.xml** (backend/pom.xml:56-62):
+
+```xml
+<dependency>
+    <groupId>software.amazon.awssdk</groupId>
+    <artifactId>s3</artifactId>
+    <version>2.41.13</version>
+    <scope>compile</scope>
+</dependency>
+```
+
+**Version**: 2.41.13 (AWS SDK for Java 2.x)
+
+## Storage Operations
+
+### File Upload
+
+**Implementation**: `org/closeness/decoder/service/impl/S3ServiceImpl.java`
+
+#### Upload Flow
+
+```java
+public void uploadObject(MultipartFile file, String key) throws Exception {
+    PutObjectRequest request =
+            PutObjectRequest.builder()
+                    .bucket(s3Properties.getBucketName())
+                    .key(key)
+                    .contentType(file.getContentType())
+                    .build();
+    s3Client.putObject(request,
+            RequestBody.fromInputStream(
+                    file.getInputStream(), file.getSize()));
+}
+```
+
+**Key Generation** (S3ServiceImpl.java:181-188):
+
+```java
+public String createS3FileKey(MultipartFile file) {
+    String originalFilename = file.getOriginalFilename();
+    String extension = ".pdf"; // default
+    if (originalFilename != null && originalFilename.contains(".")) {
+        extension = originalFilename.substring(originalFilename.lastIndexOf("."));
+    }
+    return LocalDate.now() + "/" + UUID.randomUUID() + extension;
+}
+```
+
+**Key Format**: `YYYY-MM-DD/{UUID}.pdf`
+
+**Example**: `2026-03-03/a1b2c3d4-e5f6-7890-abcd-ef1234567890.pdf`
+
+**Benefits**:
+- Date-based organization for easy cleanup
+- UUID prevents naming collisions
+- Preserves file extension
+
+#### Complete Upload with Presigned URL
+
+**Method**: `sendObjectAndGeneratePresignedUrl()` (S3ServiceImpl.java:87-132)
+
+```java
+public ResponseEntity<?> sendObjectAndGeneratePresignedUrl(MultipartFile file) {
+    // 1. Validate file
+    if (file.isEmpty()) {
+        return new ResponseEntity<>("File is not present", HttpStatus.BAD_REQUEST);
+    }
+    if (!"application/pdf".equalsIgnoreCase(file.getContentType())) {
+        return new ResponseEntity<>("Only PDF file format is supported", HttpStatus.BAD_REQUEST);
+    }
+
+    String key = createS3FileKey(file);
+    
+    try {
+        // 2. Upload to Backblaze B2
+        uploadObject(file, key);
+        log.info("File uploaded to S3");
+        
+        // 3. Generate presigned URL
+        ResponseEntity<?> response = getPreSignedUrl(key);
+        String sourceUrl = response.getBody().toString();
+        
+        // 4. Save metadata to database
+        LocalDateTime now = LocalDateTime.now();
+        UUID userId = authUtils.getCurrentUserId();
+        FriendUrl friendUrl = FriendUrl.builder()
+                .userId(userId)
+                .sourceUrl(sourceUrl)
+                .sourceKey(key)
+                .expiryTimeMinutes(60)
+                .createdAt(now)
+                .expiresAt(now.plusMinutes(60))
+                .isActive(true)
+                .build();
+        friendUrl = friendUrlRepository.save(friendUrl);
+        UUID friendCode = friendUrl.getId();
+        
+        // 5. Cache presigned URL in Redis
+        redisCacheService.createFriendUrl(String.valueOf(friendCode), sourceUrl);
+        
+        // 6. Publish upload event to Kafka
+        long createdAt = System.currentTimeMillis();
+        long expiresAt = createdAt + (60 * 60 * 1000L);
+        kafkaProducer.publishUploadEvent(
+                String.valueOf(friendCode), key, createdAt, expiresAt);
+        
+        // 7. Return friend code
+        FriendLinkDto friendLinkDto = new FriendLinkDto(friendCode);
+        return new ResponseEntity<>(friendLinkDto, HttpStatus.OK);
+    } catch (Exception e) {
+        log.error(e.getMessage());
+        return new ResponseEntity<>(e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+}
+```
+
+**Data Flow**:
+1. **Validation**: PDF only, non-empty
+2. **Upload**: `s3Client.putObject()` to Backblaze B2
+3. **Presigned URL**: 45-minute validity for downloads
+4. **Database**: Store metadata in `FriendUrl` table
+5. **Cache**: Store presigned URL in Redis with friend code as key
+6. **Event**: Publish to Kafka for expiry tracking
+7. **Response**: Return friend code (UUID) to frontend
+
+### Presigned URL Generation
+
+**Method**: `getPreSignedUrl()` (S3ServiceImpl.java:68-84)
+
+```java
+public ResponseEntity<?> getPreSignedUrl(String key) {
+    GetObjectRequest request =
+            GetObjectRequest.builder()
+                    .bucket(s3Properties.getBucketName())
+                    .key(key)
+                    .build();
+
+    GetObjectPresignRequest presignRequest =
+            GetObjectPresignRequest.builder()
+                    .signatureDuration(Duration.ofMinutes(45))
+                    .getObjectRequest(request)
+                    .build();
+
+    String preSignedUrl =
+            s3Presigner.presignGetObject(presignRequest).url().toString();
+    return new ResponseEntity<>(preSignedUrl, HttpStatus.OK);
+}
+```
+
+**Presigned URL Details**:
+- **Validity**: 45 minutes (S3ServiceImpl.java:77)
+- **Purpose**: Direct download from Backblaze B2 without backend involvement
+- **Security**: Signed URL with temporary credentials
+- **Format**: `https://bucket.endpoint.com/key?X-Amz-Algorithm=...&X-Amz-Credential=...`
+
+<Note>
+Presigned URLs allow frontend to download files directly from Backblaze B2, reducing backend load and improving download speeds.
+</Note>
+
+### Friend URL Retrieval
+
+**Method**: `getFriendUrl()` (S3ServiceImpl.java:135-159)
+
+```java
+public ResponseEntity<FriendMessageDto> getFriendUrl(UUID friendCode) {
+    long clickedAt = LocalDateTime.now()
+            .toInstant(ZoneOffset.UTC)
+            .toEpochMilli();
+    
+    // 1. Check Redis cache first
+    String sourceUrlFromCache
+            = redisCacheService.getFriendUrlFromCache(String.valueOf(friendCode));
+    if (sourceUrlFromCache != null) {
+        kafkaProducer.publishClickEvent(String.valueOf(friendCode), clickedAt);
+        FriendMessageDto friendMessageDto =
+                new FriendMessageDto("Success", sourceUrlFromCache);
+        return new ResponseEntity<>(friendMessageDto, HttpStatus.OK);
+    }
+    
+    // 2. Cache miss - query database
+    Optional<FriendUrl> friendUrl = friendUrlRepository.findById(friendCode);
+    if (friendUrl.isEmpty() || !friendUrl.get().getIsActive()) {
+        FriendMessageDto friendMessageDto =
+                new FriendMessageDto("Failed", null);
+        return new ResponseEntity<>(friendMessageDto, HttpStatus.ACCEPTED);
+    }
+    
+    // 3. Publish click event and return presigned URL
+    kafkaProducer.publishClickEvent(String.valueOf(friendCode), clickedAt);
+    FriendMessageDto friendMessageDto =
+            new FriendMessageDto("Success", friendUrl.get().getSourceUrl());
+    return new ResponseEntity<>(friendMessageDto, HttpStatus.OK);
+}
+```
+
+**Retrieval Flow**:
+1. **Cache Lookup**: Check Redis for presigned URL (S3ServiceImpl.java:139)
+2. **Cache Hit**: Return URL immediately and log click event
+3. **Cache Miss**: Query PostgreSQL `FriendUrl` table
+4. **Validation**: Check if link is active (not expired)
+5. **Event Logging**: Publish click event to Kafka
+6. **Response**: Return presigned URL or "Failed" message
+
+**Performance Optimization**:
+- Redis cache eliminates database queries for frequently accessed links
+- Presigned URL caching reduces presigner overhead
+- Click events logged asynchronously to Kafka
+
+### File Deletion
+
+**Method**: `deleteObject()` (S3ServiceImpl.java:162-167)
+
+```java
+public void deleteObject(String key) {
+    s3Client.deleteObject(DeleteObjectRequest.builder()
+            .bucket(s3Properties.getBucketName())
+            .key(key)
+            .build());
+}
+```
+
+**Usage**: Called by `S3CleanupService` after file expiry (S3CleanupService.java:22)
+
+## Automated Cleanup
+
+### Expiry Tracking
+
+Kafka Streams monitors upload events and triggers cleanup after expiry.
+
+**Topology** (org/closeness/decoder/service/KafkaStreamsTopology.java:58-63):
+
+```java
+KStream<String, String> uploadStream = builder.stream(
+        KafkaTopic.UPLOAD_EVENT.getTopicName(),
+        Consumed.with(Serdes.String(), Serdes.String()));
+uploadStream.process(
+        () -> new UploadEventProcessor(s3CleanupService, objectMapper),
+        EXPIRY_STORE,  // Persistent key-value store
+        CLICK_STORE);
+```
+
+**State Store** (KafkaStreamsTopology.java:75-81):
+
+```java
+builder.addStateStore(
+        Stores.keyValueStoreBuilder(
+                Stores.persistentKeyValueStore(EXPIRY_STORE),
+                Serdes.String(),
+                objectSerde(ExpiryStateStore.class)
+        )
+);
+```
+
+**ExpiryStateStore** (org/closeness/decoder/dto/ExpiryStateStore.java):
+
+```java
+public class ExpiryStateStore {
+    private String friendCode;
+    private String storageKey;    // S3 object key
+    private long createdAt;       // Epoch milliseconds
+    private long expiresAt;       // Epoch milliseconds
+}
+```
+
+### Cleanup Execution
+
+**Service**: `org/closeness/decoder/service/S3CleanupService.java`
+
+```java
+@Transactional
+public void handleExpiry(String friendCode, String storageKey) {
+    // 1. Mark FriendUrl as inactive in database
+    friendUrlRepository.updateActiveStatus(UUID.fromString(friendCode));
+    
+    // 2. Delete file from Backblaze B2
+    s3Service.deleteObject(storageKey);
+}
+```
+
+**Flow**:
+1. `UploadEventProcessor` detects expired file (current time > expiresAt)
+2. Calls `S3CleanupService.handleExpiry()`
+3. Database update: Set `isActive = false` for `FriendUrl`
+4. Backblaze B2 deletion: Remove file permanently
+5. Redis cache: Expires naturally (1-hour TTL) or can be manually invalidated
+
+<Info>
+The cleanup process ensures no orphaned files remain in storage after expiry.
+</Info>
+
+## Storage Optimization
+
+### Date-Based Partitioning
+
+Files organized by upload date in S3 keys:
+
+```
+backblaze-bucket/
+├── 2026-03-01/
+│   ├── uuid1.pdf
+│   ├── uuid2.pdf
+│   └── uuid3.pdf
+├── 2026-03-02/
+│   ├── uuid4.pdf
+│   └── uuid5.pdf
+└── 2026-03-03/
+    └── uuid6.pdf
+```
+
+**Benefits**:
+- Easy to identify and clean up old files
+- Simplifies lifecycle policies
+- Better organization for auditing
+
+### Lifecycle Policies (Optional)
+
+Backblaze B2 supports lifecycle rules for additional cleanup:
+
+```json
+{
+  "fileNamePrefix": "",
+  "daysFromUploadingToHiding": 2,
+  "daysFromHidingToDeleting": 1
+}
+```
+
+**Purpose**: Backup cleanup in case Kafka Streams processor misses a file
+
+## Security Considerations
+
+### Access Control
+
+**Bucket Permissions**:
+- **Private Bucket**: Files not publicly accessible without presigned URL
+- **Application Keys**: Scoped to specific bucket with minimal permissions
+- **Presigned URLs**: Time-limited access (45 minutes)
+
+### Credential Management
+
+**Environment Variables** (application.yaml:32-38):
+- Never committed to source control
+- Stored in secure environment variable management (Render secrets, K8s secrets)
+- Rotated periodically for security
+
+### File Validation
+
+**Backend Validation** (S3Controller.java:37-39):
+```java
+if (!file.getContentType().equalsIgnoreCase("application/pdf")) {
+    return new ResponseEntity<>("only pdf file format is supported", HttpStatus.BAD_REQUEST);
+}
+```
+
+**Size Limits** (application.yaml:3-5):
+```yaml
+spring:
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+```
+
+<Note>
+Combining backend validation with Spring's multipart configuration ensures only valid PDF files under 10MB are uploaded.
+</Note>
+
+## Monitoring & Logging
+
+### Upload Logging
+
+**S3ServiceImpl** (S3ServiceImpl.java:100):
+```java
+log.info("File uploaded to S3");
+```
+
+**S3Config** (S3Config.java:29-30):
+```java
+log.info("S3 client created with endpoint={}, region={}",
+        props.getEndpoint(), props.getRegion());
+```
+
+### Error Logging
+
+**S3ServiceImpl** (S3ServiceImpl.java:128-130):
+```java
+catch (Exception e) {
+    e.printStackTrace();
+    log.error(e.getMessage());
+    return new ResponseEntity<>(e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+}
+```
+
+### Kafka Event Logging
+
+**KafkaProducer** (org/closeness/decoder/service/KafkaProducer.java:34-38):
+```java
+log.info("Sent to {} partition {} offset {}",
+        topic,
+        result.getRecordMetadata().partition(),
+        result.getRecordMetadata().offset());
+```
+
+## Cost Considerations
+
+### Backblaze B2 Pricing (as of 2026)
+
+- **Storage**: $0.006/GB/month
+- **Download (first 3x storage)**: Free
+- **Download (beyond 3x)**: $0.01/GB
+- **Class C Transactions** (uploads, deletes): $0.004 per 10,000
+
+**Example Calculation** (1000 files/month, 2MB average):
+- Storage: 2GB × $0.006 = $0.012/month
+- Uploads: 1000 ÷ 10000 × $0.004 = $0.0004
+- Downloads: 6GB free (3 × 2GB storage)
+- **Total**: ~$0.01/month (negligible)
+
+### AWS S3 Comparison
+
+**AWS S3 Standard** (same workload):
+- Storage: 2GB × $0.023 = $0.046/month
+- PUT requests: 1000 ÷ 1000 × $0.005 = $0.005
+- GET requests: 1000 ÷ 1000 × $0.0004 = $0.0004
+- Data transfer: 6GB × $0.09 = $0.54
+- **Total**: ~$0.59/month
+
+**Savings**: ~98% lower costs with Backblaze B2
+
+## Backup & Disaster Recovery
+
+### Data Redundancy
+
+**Backblaze B2 Features**:
+- Files stored across multiple drives
+- Automatic error correction
+- 99.9% uptime SLA
+
+### Backup Strategy (Optional)
+
+1. **Database Backups**: PostgreSQL contains all file metadata
+2. **Replication**: Enable Backblaze B2 replication to second bucket
+3. **Point-in-Time Recovery**: Database backups every 6 hours
+
+## Migration Considerations
+
+### S3 Compatibility
+
+If migrating to AWS S3 or another S3-compatible provider:
+
+1. Update environment variables:
+   - `B2_ENDPOINT` → AWS S3 endpoint
+   - `B2_REGION` → AWS region
+2. No code changes required (AWS SDK abstracts storage provider)
+3. Data migration: Use `aws s3 sync` or Backblaze B2 CLI
+
+### Bucket-to-Bucket Transfer
+
+```bash
+b2 sync b2://closeness-decoder-bucket s3://aws-bucket
+```
+
+or
+
+```bash
+aws s3 sync s3://source-bucket s3://dest-bucket
+```
