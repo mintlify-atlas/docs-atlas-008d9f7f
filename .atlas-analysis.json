@@ -1,0 +1,97 @@
+{
+  "projectType": "saas",
+  "projectName": "Closeness Decoder",
+  "projectDescription": "Secure file sharing platform with time-limited presigned URLs and Google OAuth authentication",
+  "theme": "palm",
+  "primaryColor": "#2dd4bf",
+  "lightColor": "#5eead4",
+  "darkColor": "#14b8a6",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/authentication",
+              "features/file-sharing",
+              "features/presigned-urls",
+              "features/rate-limiting"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/backend",
+              "architecture/frontend",
+              "architecture/storage"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/environment-variables",
+              "deployment/backend-setup",
+              "deployment/frontend-setup",
+              "deployment/database"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Authentication",
+            "pages": [
+              "api/auth/signup",
+              "api/auth/signin",
+              "api/auth/current-user",
+              "api/auth/logout"
+            ]
+          },
+          {
+            "group": "File Operations",
+            "pages": [
+              "api/files/upload",
+              "api/files/generate-friend-url",
+              "api/files/get-friend-url",
+              "api/files/presigned-url"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Google OAuth 2.0 authentication with JWT tokens",
+    "Secure PDF file uploads to S3-compatible storage (Backblaze B2)",
+    "Time-limited presigned URLs for file sharing (60-minute expiration)",
+    "Friend URL system with unique codes for secure sharing",
+    "Rate limiting with Redis-backed caching",
+    "Real-time analytics with Kafka event streaming",
+    "Click tracking and view counting",
+    "Automatic file cleanup for expired links",
+    "PostgreSQL database with JPA/Hibernate",
+    "React dashboard with upload management"
+  ],
+  "publicApiSurface": [
+    "POST /api/auth/signup - Register with Google OAuth",
+    "POST /api/auth/signin - Sign in with Google OAuth",
+    "GET /api/auth/me - Get current authenticated user",
+    "POST /api/auth/logout - Sign out user",
+    "POST /api/upload - Upload file to S3 storage",
+    "POST /api/friend-url/upload - Upload file and generate shareable friend URL",
+    "GET /api/friend-url/{friendCode} - Retrieve presigned URL by friend code",
+    "GET /api/presigned-url/{key} - Generate presigned URL for S3 object"
+  ]
+}
